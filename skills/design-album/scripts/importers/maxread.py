@@ -307,6 +307,174 @@ def iter_nodes():
             yield ch
 
 
+def asset_table(mf):
+    """Texture files of the scene: {asset GUID bytes: path} from the stream FileAssetMetaData3."""
+    try:
+        data = mf.openstream("FileAssetMetaData3").read()
+    except Exception:
+        return {}
+    out = {}
+    pat = b"\x06\x00\x00\x00" + "Bitmap".encode("utf-16le")
+    for m in re.finditer(re.escape(pat), data):
+        g = bytes(data[m.start() - 16:m.start()])
+        j = m.end()
+        for off in (0, 2):
+            if j + off + 4 > len(data):
+                break
+            n = struct.unpack_from("<I", data, j + off)[0]
+            if 3 < n < 400:
+                s = bytes(data[j + off + 4:j + off + 4 + 2 * n]).decode("utf-16le", "ignore").rstrip("\x00")
+                if "." in s:
+                    out[g] = s
+                    break
+    return out
+
+
+def _all_refs(x):
+    out = []
+    try:
+        out += M.get_references(x) or []
+    except Exception:
+        pass
+    try:
+        out += list(M.get_reference(x).values())          # keyed references (0x2035): param blocks, texmaps
+    except Exception:
+        pass
+    return [r for r in out if r is not None]
+
+
+def _leaf_bytes(ch, acc, depth=0):
+    if depth > 10:
+        return
+    kids = getattr(ch, "children", None)
+    if kids:
+        for c in kids:
+            _leaf_bytes(c, acc, depth + 1)
+    elif ch.data is not None and not isinstance(ch.data, (str, tuple)):
+        try:
+            b = bytes(ch.data)
+            if len(b) < 4096:
+                acc.append(b)
+        except Exception:
+            pass
+
+
+def mat_textures(mat, assets):
+    """Texture files a material uses (through its sub-materials and maps): ['D:\\...\\full_artisan-burgundy-132-132.jpeg']"""
+    if mat is None or not assets:
+        return []
+    acc, seen, stack = [], set(), [(mat, 0)]
+    while stack:
+        x, d = stack.pop()
+        if id(x) in seen or d > 9:
+            continue
+        seen.add(id(x))
+        _leaf_bytes(x, acc)
+        stack += [(r, d + 1) for r in _all_refs(x)]
+    blob = b"\x00".join(acc)
+    return [p for g, p in assets.items() if g in blob]
+
+
+def text_string(obj):
+    """Text shape -> (font, text): the strings stored in the object (font name first, then the text)."""
+    acc = []
+
+    def walk(ch, depth=0):
+        if depth > 6:
+            return
+        kids = getattr(ch, "children", None)
+        if kids:
+            for c in kids:
+                walk(c, depth + 1)
+        elif isinstance(ch.data, str):
+            acc.append(ch.data)
+        elif ch.data is not None and not isinstance(ch.data, tuple):
+            try:
+                b = bytes(ch.data)
+            except Exception:
+                return
+            for m in re.finditer(rb"(?:[\x20-\x7e\xa0-\xff]\x00){2,}", b):
+                acc.append(m.group().decode("utf-16le"))
+    walk(obj)
+    acc = [a.strip() for a in acc if a.strip()]
+    if not acc:
+        return None, None
+    font = acc[0] if len(acc) > 1 else None
+    text = " ".join(acc[1:] if len(acc) > 1 else acc)
+    return font, re.sub(r"\s+", " ", text).strip()
+
+
+def spline_lines(obj):
+    """Editable Spline (SplineShape / Line) base object -> [(points Nx3, closed)] in object space.
+    Chunk 0x1010 holds the shape, each child 0x1010 one spline: 0x2900 knot count, 0x2904 closed flag, 0x290A the
+    knots, 13 values each (type, flags, weight, position, in-handle, out-handle, aux). Handles are ignored: walls and
+    floor outlines are drawn with straight segments."""
+    out = []
+    try:
+        shape = obj.get_first(0x1010)
+    except Exception:
+        return out
+    if shape is None:
+        return out
+    for sp in getattr(shape, "children", None) or []:
+        if sp.types != 0x1010:
+            continue
+        n = closed = None
+        knots = None
+        for c in getattr(sp, "children", None) or []:
+            if isinstance(c.data, tuple) or getattr(c, "children", None):
+                continue
+            b = bytes(c.data)
+            if c.types == 0x2900 and len(b) >= 4:
+                n = struct.unpack_from("<i", b, 0)[0]
+            elif c.types == 0x2904 and len(b) >= 4:
+                closed = struct.unpack_from("<i", b, 0)[0]
+            elif c.types == 0x290A:
+                knots = b
+        if not n or knots is None or len(knots) != n * 52:
+            continue
+        pts = np.array([struct.unpack_from("<3f", knots, (13 * i + 3) * 4) for i in range(n)], float)
+        if np.all(np.isfinite(pts)):
+            out.append((pts, bool(closed)))
+    return out
+
+
+def modifier_params(msh, cls):
+    """ParamBlock2 of the first modifier of class `cls` on a node's object: {param id: float | int}."""
+    seen = 0
+    while msh is not None and M.get_guid(msh) in (0x2032, 0x2033) and seen < 20:
+        try:
+            refs = M.get_references(msh) or []
+        except Exception:
+            return {}
+        for r in refs[:-1]:
+            if r is None or cls_name(r) != cls:
+                continue
+            try:
+                subs = M.get_references(r) or []
+            except Exception:
+                subs = []
+            for pb in subs:
+                if pb is None or cls_name(pb) != "ParamBlock2":
+                    continue
+                vals = {}
+                for c in getattr(pb, "children", None) or []:
+                    if c.types != 0x100E or isinstance(c.data, tuple):
+                        continue
+                    b = bytes(c.data)
+                    if len(b) != 19:
+                        continue
+                    pid, typ = struct.unpack_from("<HH", b, 0)
+                    if typ in (0, 5, 6, 7):
+                        vals[pid] = struct.unpack_from("<f", b, 15)[0]
+                    elif typ in (1, 4):
+                        vals[pid] = struct.unpack_from("<i", b, 15)[0]
+                return vals
+        msh = refs[-1] if refs else None
+        seen += 1
+    return {}
+
+
 def _chunk_name(ch, depth=0):
     """Material / map name: chunk 0x4001 (directly or nested up to 3 levels)."""
     try:

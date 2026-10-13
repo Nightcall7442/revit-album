@@ -85,6 +85,39 @@ def draw_elevation(sp, P, e, k=25, occ=None):
             g = place_text(sp, occ, o["mark"], [((s0 + s1) / 2, z0 + (z1 - z0) * f) for f in (0.68, 0.5, 0.82)], 2.4 * k, bold=True,
                            rgb=(80, 80, 80))
     for it in e.get("items", []):
+        if it.get("type") == "poly":                 # a piece of furniture: its front view outline from the model
+            pts = [tuple(p) for p in it["pts"]]
+            S.fill(sp, pts, tuple(it.get("rgb", (226, 220, 210))), "SD_Мебель")
+            S.poly(sp, pts, "SD_Мебель", True, (70, 66, 62), 25)
+            g = Polygon(pts).buffer(0)
+            if it.get("label") and not g.is_empty:
+                c = g.representative_point()
+                place_text(sp, occ, it["label"], [(c.x, c.y), (c.x, c.y + 150), (c.x, c.y - 150)], 2.2 * k, bold=True,
+                           rgb=(90, 70, 40), mask=True)
+            continue
+        if it.get("type") == "sign":                 # a sign of the model at its place, in its words
+            t = it["text"]
+            hh = 160.0
+            w = S.tw(t, hh) + 120
+            x0_, z0_ = it["s"] - w / 2, it["z"] - hh / 2 - 60
+            if it.get("light"):
+                S.fill(sp, [(x0_, z0_), (x0_ + w, z0_), (x0_ + w, z0_ + hh + 120), (x0_, z0_ + hh + 120)], (255, 246, 214), "SD_Мебель")
+            S.text(sp, t, (it["s"], it["z"]), hh, "MIDDLE_CENTER", "SD_Мебель", bold=True,
+                   rgb=(200, 120, 20) if it.get("light") else (60, 60, 60))
+            Y.dashed_shape(sp, box(x0_, z0_, x0_ + w, z0_ + hh + 120), 0.9 * k, 0.5 * k, (150, 120, 60), 13)
+            occ.add(box(x0_, z0_, x0_ + w, z0_ + hh + 120), "sym")
+            lab = ("%s " % it["mark"] if it.get("mark") else "") + ("вывеска, LED-неон" if it.get("light") else "вывеска")
+            place_text(sp, occ, lab, [(it["s"], z0_ - 2.4 * k), (it["s"], z0_ + hh + 120 + 2.4 * k)], 1.7 * k,
+                       rgb=(120, 90, 40), mask=True)
+            continue
+        if it.get("type") == "wall_light":
+            c = (it["s"], it["z"])
+            S.fill(sp, Point(c).buffer(1.6 * k, 24), (64, 186, 166), "SD_Свет")
+            S.circle(sp, c, 1.6 * k, "SD_Свет", (30, 110, 100), 18)
+            occ.add(Point(c).buffer(1.8 * k), "sym")
+            place_text(sp, occ, "бра", [(c[0], c[1] + 3.0 * k), (c[0] + 4.0 * k, c[1], 0, "MIDDLE_LEFT")], 1.6 * k,
+                       rgb=(30, 110, 100), mask=True)
+            continue
         rgb, mode = ITEM_STYLE.get(it.get("type", "panel"), ((240, 240, 240), None))
         pts = [(it["s0"], it["z0"]), (it["s1"], it["z0"]), (it["s1"], it["z1"]), (it["s0"], it["z1"])]
         if rgb:
@@ -105,6 +138,14 @@ def draw_elevation(sp, P, e, k=25, occ=None):
                        rgb=(110, 100, 90), mask=True)
         if it.get("type") == "led":
             Y.dashed(sp, (it["s0"], it["z0"]), (it["s1"], it["z0"]), 1.0 * k, 0.5 * k, S.C_AMBER, 35)
+    for zn in e.get("zones", []):
+        if not zn.get("front"):
+            continue
+        pts = [(zn["s0"], zn["z0"]), (zn["s1"], zn["z0"]), (zn["s1"], zn["z1"]), (zn["s0"], zn["z1"])]
+        S.fill(sp, pts, WALL_TILE, "SD_Мебель")
+        tt = zn.get("tile", tile)
+        S.grid_lines(sp, Polygon(pts), tt[0], tt[1], origin=tuple(zn.get("origin", (0, 0))), rgb=WALL_TILE_J)
+        S.poly(sp, pts, "SD_Мебель", True, (70, 66, 62), 25)
     for fx in e.get("fixtures", []):
         shp = Polygon(fx["poly"]).buffer(0)
         if shp.is_empty or shp.area < 100:
@@ -172,6 +213,9 @@ def draw_elevation(sp, P, e, k=25, occ=None):
     for zn in e.get("zones", []):
         if 0 < zn["z1"] < H:
             hs.add(float(zn["z1"]))
+    for v in e.get("extra_s", []):
+        if 0 <= v <= L:
+            ss.add(round(v))
     for v in e.get("extra_heights", []) + e.pop("_box_heights", []):
         hs.add(float(v))
     if len(set(round(v) for v in ss)) > 2:          # a chain equal to the overall one is noise (lesson L-039)
@@ -319,6 +363,8 @@ def elevation_sheet(A, no, title, scale, arg):
         r = A.vp(psp, off, win, (x0, 64.0), k)
         A.title_note(psp, r[0] + 4, r[3] + 1.5, "Развёртка %s" % e.get("label", ""), "1:25")
         x0 = r[2] + 6
+    if not arg["plan"] and any(e.get("feature") for e in arg["elevs"]):
+        _key_plan(A, psp, no, arg["elevs"])
     # right part / below: materials + notes on the last sheet of a group
     room = arg["room"]
     if arg["last"]:
@@ -332,6 +378,35 @@ def elevation_sheet(A, no, title, scale, arg):
 
 
 COL_TOP_D = 258.0
+
+
+def _key_plan(A, psp, no, elevs, w_mm=100.0, h_mm=78.0, x_mm=308.0, y_mm=40.0):
+    """Small plan of the whole floor with the walls of these elevations marked by their letters (where the wall is)."""
+    P = A.P
+    name = "SD_%02d_key" % no                     # a band of its own in model space: never inside another viewport
+    blk = A.doc.blocks.new(name)
+    off = (no * 60000.0, -100000.0)
+    A.msp.add_blockref(name, off)
+    A._blocks[off] = (blk, A.cur_title)
+    from . import placer
+    placer.CUR_BLOCK = off
+    x0, y0, x1, y1 = P.bounds
+    kk = max((x1 - x0 + 1600) / w_mm, (y1 - y0 + 1600) / h_mm)
+    for r in P.rooms:
+        S.fill(blk, r["shp"], (248, 246, 242), "SD_Штриховка")
+    Y.draw_walls(blk, P, kk)
+    for e in elevs:
+        a, b = e["a"], e["b"]
+        S.line(blk, tuple(a), tuple(b), "SD_Акцент", BRONZE, 70)
+        L = math.hypot(b[0] - a[0], b[1] - a[1]) or 1.0
+        nx, ny = (b[1] - a[1]) / L, -(b[0] - a[0]) / L          # the room is to the right of a->b
+        m = ((a[0] + b[0]) / 2 + nx * 4.0 * kk, (a[1] + b[1]) / 2 + ny * 4.0 * kk)
+        S.fill(blk, Point(m).buffer(2.4 * kk, 24), (255, 255, 255), "SD_Текст")
+        S.circle(blk, m, 2.4 * kk, "SD_Текст", BRONZE, 25)
+        S.text(blk, e.get("label", ""), m, 2.4 * kk, "MIDDLE_CENTER", bold=True, rgb=(90, 70, 40))
+    win = (x0 - 800, y0 - 800, x1 + 800, y1 + 800)
+    r = A.vp(psp, off, win, (x_mm + (w_mm - (win[2] - win[0]) / kk) / 2, y_mm), kk)
+    A.title_note(psp, r[0], r[3] + 1.5, "Схема развёрток", "без масштаба", h=3.0)
 
 
 def elev_material_areas(P, elevs):
@@ -380,15 +455,18 @@ def _group_tables(A, col, arg, compact=False):
     m = elev_material_areas(P, g["elevs"])
     tile_area, paint_area = m["tile"], m["paint"]
     room = arg["room"]
+    F = P.finishes or {}
     if tile_area > 0:
-        rows.append(["Керамогранит / плитка стен", fmt_area(tile_area), fmt_area(tile_area * 1.1)])
-    if room is not None:
+        rows.append([F.get("tile_label") or "Керамогранит / плитка стен", fmt_area(tile_area), fmt_area(tile_area * 1.1)])
+    if room is not None and not any(e.get("feature") for e in g["elevs"]):      # a wall of the hall: not its floor
         fl = P.floor_of_room((room.get("members") or [room["name"]])[0])
         if fl and fl.get("pattern") == "tile":
             rows.append(["Плитка пола %s" % "×".join(map(str, fl.get("tile", [600, 600]))), fmt_area(room["area"]),
                          fmt_area(room["area"] * 1.1)])
     if paint_area > 0:
-        rows.append(["Окраска (влагостойкая)", fmt_area(paint_area), "-"])
+        wet_ = room is not None and room.get("cls") == "wet"
+        rows.append([("%s%s" % (F["base_label"], " (влагостойкая, защитный лак)" if wet_ else "")) if F.get("base_label")
+                     else ("Окраска (влагостойкая)" if wet_ else "Окраска"), fmt_area(paint_area), "-"])
     if room is not None and room.get("cls") == "wet":
         rows.append(["Гидроизоляция обмазочная (пол, стены 200 мм, душ 2000 мм)", fmt_area(waterproofing(P, room)), "-"])
     for r in g.get("materials", []):
@@ -505,8 +583,9 @@ def bath_plan(A, psp, no, room):
     rr = A.vp(psp, off, win, (24.0, 254.0 - h), k)
     A.title_note(psp, rr[0], rr[3] + 1.5, "План", "1:25")
     # legend under the plan
-    items = [(_lg_fill(WALL_TILE), "Плитка / керамогранит стен"), (_lg_floor_tile, "Плитка пола"),
-             (_lg_fill(WALL_PAINT), "Окраска влагостойкой краской"),
+    F = P.finishes or {}
+    items = [(_lg_fill(WALL_TILE), F.get("tile_label") or "Плитка / керамогранит стен"), (_lg_floor_tile, "Плитка пола"),
+             (_lg_fill(WALL_PAINT), F.get("base_label") or "Окраска влагостойкой краской"),
              (_lg_water3, "Выводы ХВС / ГВС / канализация")]
     S.legend(psp, 24.0, rr[1] - 9.0, items, title="Обозначения", w1=16.0, w2=min(96.0, w - 16.0), rh=5.2)
     return rr[2]

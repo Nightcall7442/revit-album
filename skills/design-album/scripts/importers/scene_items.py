@@ -477,3 +477,85 @@ def collect(rows, meshes, k, d, out_dir):
         it.pop("_sig", None)
         it["mesh"] = "%sitems/%s.pkl" % (pre, it["id"])
     return items, signs
+
+
+LIGHT_ITEM = re.compile(r"(?i)chandelier|люстр|sconce|\bбра\b|eichholtz|tissot|pendant|подвесн")
+MAX_FACES = 40000
+
+
+def collect_lights(rows, meshes, k, d, out_dir, n0=0):
+    """Decorative fixtures that get a sketch of their own: chandeliers (a body 450+ across hanging under the ceiling)
+    and wall lights (sconces). Meshes of hundreds of thousands of faces (a fringe of chains) are thinned to
+    MAX_FACES for the views. -> items with kind_hint 'chandelier' | 'sconce'."""
+    root, kids, by = _top_groups(rows)
+    walls = [w["rect"] for w in d.get("walls", []) if w.get("rect")]
+    groups = {}
+    for r in rows:
+        txt = " ".join([r.get("name") or "", r.get("parent") or ""] + list(r.get("materials") or []))
+        if not LIGHT_ITEM.search(txt) or r.get("idx") not in meshes or not r.get("bbox"):
+            continue
+        groups.setdefault(root(r), []).append(r)
+    units = []
+    for g, rs in groups.items():
+        lo = np.min([np.array(r["bbox"][0], float) for r in rs], 0)
+        hi = np.max([np.array(r["bbox"][1], float) for r in rs], 0)
+        size = hi - lo
+        plan = float(max(size[0], size[1]))
+        c = ((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0)
+        near = min([_gap((lo[0], lo[1], hi[0], hi[1]), w) for w in walls] or [9e9])
+        if plan >= 450 and size[2] >= 250 and lo[2] >= 1200:
+            kind = "chandelier"
+        elif lo[2] >= 900 and hi[2] <= 2700 and plan <= 700 and near <= 150:
+            kind = "sconce"
+        else:
+            continue
+        units.append((g, rs, lo, hi, c, kind))
+    items = []
+    mdir = os.path.join(out_dir, "items")
+    os.makedirs(mdir, exist_ok=True)
+    pre = "import/" if os.path.basename(os.path.abspath(out_dir)) == "import" else ""
+    for g, rs, lo, hi, c, kind in sorted(units, key=lambda u: (u[4][0], u[4][1])):
+        th = 0.0
+        if kind == "sconce" and walls:              # the wall behind it at local +y
+            from shapely.geometry import Point, box
+            p = Point(c)
+            w = min(walls, key=lambda r: box(*r).distance(p))
+            q = box(*w).exterior.interpolate(box(*w).exterior.project(p))
+            th = math.degrees(math.atan2(q.y - c[1], q.x - c[0])) - 90.0
+        a = math.radians(th)
+        R = np.array([[math.cos(a), math.sin(a)], [-math.sin(a), math.cos(a)]])
+        nf = sum(len(meshes[r["idx"]][2] or []) for r in rs)
+        step = max(1, int(math.ceil(nf / float(MAX_FACES))))
+        parts = []
+        for r in rs:
+            name, vw, faces = meshes[r["idx"]]
+            v = np.asarray(vw, float) * k
+            v[:, :2] = (v[:, :2] - np.array(c)) @ R.T
+            v[:, 2] -= lo[2]
+            fl = [list(f[1] if isinstance(f, tuple) else f) for f in (faces or [])][::step]
+            parts.append(dict(name=r.get("name") or "", mats=list(r.get("materials") or []), cls=r.get("class") or "",
+                              mods=r.get("mods") or [], prop=False, v=v.astype(np.float32), f=fl))
+        allv = np.vstack([p["v"] for p in parts])
+        mid = (allv.min(0) + allv.max(0)) / 2.0
+        for p in parts:
+            p["v"][:, 0] -= mid[0]
+            p["v"][:, 1] -= mid[1]
+        allv = np.vstack([p["v"] for p in parts])
+        size = [round(float(np.ptp(allv[:, i]))) for i in range(3)]
+        sig = (len(parts), sum(len(p["v"]) for p in parts), kind)
+        place = [round(c[0]), round(c[1]), round(th) % 360]
+        for it in items:
+            if it["_sig"] == sig and all(abs(a_ - b_) <= 30 for a_, b_ in zip(it["size"], size)):
+                it["places"].append(place)
+                it["qty"] += 1
+                break
+        else:
+            iid = "l%d" % (n0 + len(items) + 1)
+            pickle.dump(dict(size=size, parts=parts), open(os.path.join(mdir, "%s.pkl" % iid), "wb"))
+            items.append(dict(id=iid, src=g, parts=sorted(set(_num(r.get("name")) or r.get("name") for r in rs))[:12],
+                              mats=sorted(set(m for r in rs for m in (r.get("materials") or [])))[:12], size=size, qty=1,
+                              z0=round(float(lo[2])), places=[place], kind_hint=kind, mesh="%sitems/%s.pkl" % (pre, iid),
+                              _sig=sig))
+    for it in items:
+        it.pop("_sig", None)
+    return items

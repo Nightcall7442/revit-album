@@ -127,8 +127,26 @@ def stack_walls(objects, tmin=60, tmax=700):
         ys0 = min(p["rect"][1] for p in parts)
         xs1 = max(p["rect"][2] for p in parts)
         ys1 = max(p["rect"][3] for p in parts)
+        # a part under the window standing proud of the wall above it is a ledge (an installation box, a parapet):
+        # evidence for the senior; the wall stays the union until the senior decides what the ledge is
+        ledges = []
+        if band is not None:
+            tall = max(parts, key=lambda p: p["z1"] - p["z0"])
+            ax = 1 if ha else 0
+            lo_, hi_ = tall["rect"][ax], tall["rect"][ax + 2]
+            for p in parts:
+                if p is tall or p["z1"] > band[0] + 10:
+                    continue
+                for a_, b_ in ((p["rect"][ax], lo_), (hi_, p["rect"][ax + 2])):
+                    if b_ - a_ >= 30:
+                        r = list(p["rect"])
+                        r[ax], r[ax + 2] = a_, b_
+                        wr = [xs0, ys0, xs1, ys1]
+                        wr[ax], wr[ax + 2] = lo_, hi_
+                        ledges.append(dict(name=p["name"], rect=[round(v) for v in r], z0=round(p["z0"]), z1=round(p["z1"]),
+                                           wall_rect=[round(v) for v in wr]))
         out.append(dict(parts[0], name="+".join(p["name"] for p in parts)[:80], rect=(xs0, ys0, xs1, ys1), z0=z0, z1=z1,
-                        nverts=8, flat=False, window_band=band))
+                        nverts=8, flat=False, window_band=band, ledges=ledges))
         used.update(grp)
         merged_ids.update(thin[g][0] for g in grp)
     return [o for i, o in enumerate(objects) if i not in merged_ids] + out
@@ -485,9 +503,11 @@ def lights(objects, zone, storey):
     for k, items in (("line", tracks), ("point", points)):
         for it in items:
             c = box(*it["rect"]).centroid
-            if not zone.contains(c) or it["z1"] > storey + 60 or it["z0"] < 1500:
-                continue
-            out.append(dict(it, kind=k))
+            if not zone.contains(c) or it["z0"] > storey - 30:
+                continue                         # parked away / above the slab (a hanger into the slab is kept)
+            if it["z0"] < 1500 and not (k == "point" and it["z0"] >= 900 and it["z1"] - it["z0"] <= 900):
+                continue                         # table / floor lamps; a wall light (sconce) hangs from 900 up
+            out.append(dict(it, kind=k, low=it["z0"] < 1500))
     return out
 
 
@@ -707,9 +727,12 @@ def build(objects, ceil, path, png=None, slab=None):
     walls, shell = wall_candidates(objects, storey=storey)
     ws = []
     front_ops = []
+    ledges = []
     for i, c in enumerate(walls, 1):
         x0, y0, x1, y1 = [round(v) for v in c["rect"]]
         ws.append(dict(id="W%d" % i, kind="existing", rect=[x0, y0, x1, y1], source=c["name"], check=True))
+        for lg in c.get("ledges") or []:
+            ledges.append(dict(lg, wall="W%d" % i))
         if c.get("window_band"):                 # wall built from parts around a window: the window itself
             s0, s1 = c["window_band"]
             horiz = (x1 - x0) >= (y1 - y0)
@@ -854,6 +877,7 @@ def build(objects, ceil, path, png=None, slab=None):
              _beams=[[r, z] for r, z in beams(objects, storey) if inside is None or inside.contains(box(*r).centroid)],
              _ceil_planes=[[r, z] for r, z in ceiling_planes(objects, storey)
                            if inside is None or inside.contains(box(*r).centroid)],
+             _ledges=ledges,
              _todo=["проверить стены, проёмы и мебель (check=true) по plan_cut.png / draft_plan.png",
                     "назвать помещения (по содержимому названы автоматически)", "оси и высоты - уточнить"])
     json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)

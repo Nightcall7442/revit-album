@@ -156,8 +156,9 @@ def item_sheet(A, no, title, scale, arg):
     m = _mesh(A, it)
     qty = int(it.get("qty", 1))
     rooms = ", ".join(it.get("rooms") or []) or "по месту"
-    psp = A.make_sheet(no, title, scale, "Эскиз для изготовления: виды, размеры, материалы. Количество — %d шт. "
-                       "Помещение — %s" % (qty, rooms))
+    lead = "Светильник: виды, размеры, материалы, крепление" if it.get("kind") in ("chandelier", "sconce") else \
+        "Эскиз для изготовления: виды, размеры, материалы"
+    psp = A.make_sheet(no, title, scale, "%s. Количество — %d шт. Помещение — %s" % (lead, qty, rooms))
     W, D, H = m.size
     fw, fh, lw, th = W / k, H / k, D / k, D / k
     x0 = AREA[0] + 14.0

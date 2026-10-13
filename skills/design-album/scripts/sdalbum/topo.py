@@ -148,13 +148,14 @@ def furniture_shapes(P, kinds=None):
     return out
 
 
-def back_side(P, g, room):
-    """Wall face a fixture stands against: (segment, inward normal, point on face opposite the fixture centre)."""
+def back_side(P, g, room, max_d=150):
+    """Wall face a fixture stands against: (segment, inward normal, point on face opposite the fixture centre).
+    max_d: a wall-hung WC stands in front of its installation box - the wall is further."""
     best = None
     c = g.centroid
     for seg, n in wall_faces(P, room, 0.0, kinds=()):
         d = seg.distance(g)
-        if d > 150:
+        if d > max_d:
             continue
         # overlap of the fixture projection with the segment
         x0, y0, x1, y1 = g.bounds

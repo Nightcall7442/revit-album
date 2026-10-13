@@ -158,7 +158,12 @@ def guess_units(rows):
 def main(path, out, units=None, cut=1100.0, floor=0.0):
     import maxread as R
     os.makedirs(out, exist_ok=True)
-    R.load(path)
+    mf = R.load(path)
+    try:
+        assets = R.asset_table(mf)
+    except Exception:
+        assets = {}
+    tex_cache = {}
     cache = {}
     rows, meshes = [], {}
     for node in R.iter_nodes():
@@ -168,6 +173,15 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         cls = R.cls_name(base) if base is not None else None
         row = dict(idx=node.number, name=name, cls=cls, mods=R.modifiers(msh) if msh is not None else [],
                    material=R.mat_name(mat), layer=R.layer_name(lyr))
+        if mat is not None and assets:          # texture files name what the material is (tile, plaster, brick)
+            key = id(mat)
+            if key not in tex_cache:
+                try:
+                    tex_cache[key] = [p.replace("\\", "/").split("/")[-3:] for p in R.mat_textures(mat, assets)][:12]
+                except Exception:
+                    tex_cache[key] = []
+            if tex_cache[key]:
+                row["tex"] = ["/".join(p) for p in tex_cache[key]]
         try:
             row["materials"] = R.mat_names(mat)
         except Exception:
@@ -200,6 +214,27 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                     meshes[row["idx"]] = (name, vw, R.poly_faces(base))
             except Exception as ex:
                 row["err"] = repr(ex)
+            if "FloorGenerator" in (row.get("mods") or []):
+                fg = R.modifier_params(msh, "FloorGenerator")       # tile length (0) / width (4), scene units
+                if fg.get(0) and fg.get(4):
+                    row["fg_tile"] = [float(fg[0]), float(fg[4])]
+            if cls == "Text":                    # a sign: its words and where it stands
+                try:
+                    font, txt = R.text_string(base)
+                except Exception:
+                    font, txt = None, None
+                if txt:
+                    row["text"], row["font"] = txt, font
+                    row["pos"] = [float(v) for v in W[:3, 3]]
+            if cls in ("SplineShape", "Line"):
+                try:
+                    lines = R.spline_lines(base)
+                except Exception:
+                    lines = []
+                if lines and sum(len(p) for p, _ in lines) <= 4000:
+                    pw = [(p @ W[:3, :3].T + W[:3, 3], cl) for p, cl in lines]
+                    row["lines"] = [dict(p=[[float(q[0]), float(q[1])] for q in p], closed=cl) for p, cl in pw]
+                    row["lines_z"] = float(np.mean([p[:, 2].mean() for p, _ in pw]))
             if row.get("mods") and "bbox" not in row:
                 row["note"] = "геометрия не читается: модификаторы (%s) не вычисляются - смотреть параметры примитива" % (
                     ", ".join(row["mods"]))
@@ -218,6 +253,14 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
             r["z0"], r["z1"] = round(r["z0"] * k, 1), round(r["z1"] * k, 1)
         if r.get("prim"):
             r["prim_mm"] = {kk: round(vv * k, 1) for kk, vv in r["prim"].items()}
+        if r.get("fg_tile"):
+            r["fg_tile"] = [round(v * k, 1) for v in r["fg_tile"]]
+        if r.get("pos"):
+            r["pos"] = [round(v * k, 1) for v in r["pos"]]
+        if r.get("lines"):
+            for ln in r["lines"]:
+                ln["p"] = [[round(x * k, 1), round(y * k, 1)] for x, y in ln["p"]]
+            r["lines_z"] = round(r["lines_z"] * k, 1)
     json.dump(dict(source=os.path.basename(path), units=u, unit_mm=k, storey_guess=H, nodes=rows),
               open(os.path.join(out, "inventory.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     # sections
@@ -243,6 +286,7 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
     _summary(rows, u, H, sec, os.path.join(out, "inventory.md"), path)
     slab = H * k if H and H * k > 2000 else None      # wall height of the scene = floor-to-slab
     d = _draft(rows, os.path.join(out, "draft_project.json"), ceil, slab)
+    _surfaces(rows, meshes, k, d, out)
     _items(rows, meshes, k, d, out)
     print("units:", u, "(guess from storey %s)" % (round(H, 1) if H else "-") if not units else "")
     print("nodes:", len(rows), " meshes:", len(meshes), " ->", out)
@@ -343,6 +387,29 @@ def _draft(rows, path, ceil, slab=None):
     return d
 
 
+def _surfaces(rows, meshes, k, d, out):
+    """Floor coverings (zones, tile formats) and boxes of the scene -> evidence for the senior."""
+    from importers import scene_surfaces as SS
+    try:
+        fl = SS.floors(rows, meshes, k)
+        bx = SS.boxes(rows, d.get("walls", []), d.get("_ledges", []))
+        wm = SS.wall_materials(rows, d.get("walls", []))
+    except Exception as ex:                  # the album is still built: floors and boxes by norms
+        print("surfaces: не собраны (%r)" % (ex,))
+        return
+    texts = [dict(name=r["name"], text=r["text"], font=r.get("font"), pos=r["pos"], parent=r.get("parent"),
+                  light=any("LightMtl" in (m or "") or "neon" in (m or "").lower() for m in (r.get("materials") or [])))
+             for r in rows if r.get("text") and r.get("pos")]
+    p = os.path.join(out, "draft_project.json")
+    dd = json.load(open(p, encoding="utf-8"))
+    dd["_texts"] = d["_texts"] = texts
+    dd["_floor_src"], dd["_box_src"], dd["_wall_mats"] = fl, bx, wm
+    json.dump(dd, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    d["_floor_src"], d["_box_src"], d["_wall_mats"] = fl, bx, wm
+    print("surfaces: покрытий пола %d (%s), коробов %d" % (
+        len(fl), ", ".join("%s %s" % (f["material"], "×".join(map(str, f["tile"])) if f["tile"] else "-") for f in fl), len(bx)))
+
+
 def _items(rows, meshes, k, d, out):
     """Furniture / decor items with their meshes (sheets «Мебель индивидуального изготовления»)."""
     from importers import scene_items
@@ -351,6 +418,12 @@ def _items(rows, meshes, k, d, out):
     except Exception as ex:                  # the album is still built without the items
         print("items: не собраны (%r)" % (ex,))
         return
+    try:                                     # chandeliers and wall lights: sketches of their own
+        lights = scene_items.collect_lights(rows, meshes, k, d, out, len(items))
+    except Exception as ex:
+        print("items: светильники не собраны (%r)" % (ex,))
+        lights = []
+    items = items + lights
     p = os.path.join(out, "draft_project.json")
     dd = json.load(open(p, encoding="utf-8"))
     dd["items"] = items

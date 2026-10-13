@@ -152,9 +152,17 @@ def draw_walls(sp, P, k, shell_rgb=S.C_WALL, part_mode="solid", show_boxes=False
             dashed_shape(sp, shp, 1.2 * k, 0.7 * k, (150, 150, 155), 13)
     if show_boxes:
         for b in P.boxes:
-            S.fill(sp, b["shape"], (226, 238, 252), "SD_Перегородки")
-            S.hatch(sp, b["shape"], S.C_BLUE, "ANSI37", scale=0.28 * k, layer="SD_Перегородки")
-            outline(sp, b["shape"], S.C_BLUE, 30, "SD_Перегородки")
+            shp = b["shape"].difference(P.mass)          # a cladding shows the column inside it
+            if shp.is_empty:
+                continue
+            if b.get("box") == "bar":                    # a counter frame: lighter, it is not a wall
+                S.fill(sp, shp, (238, 244, 252), "SD_Перегородки")
+                S.hatch(sp, shp, S.C_BLUE, "ANSI31", scale=0.22 * k, layer="SD_Перегородки")
+                outline(sp, shp, S.C_BLUE, 25, "SD_Перегородки")
+                continue
+            S.fill(sp, shp, (226, 238, 252), "SD_Перегородки")
+            S.hatch(sp, shp, S.C_BLUE, "ANSI37", scale=0.28 * k, layer="SD_Перегородки")
+            outline(sp, shp, S.C_BLUE, 30, "SD_Перегородки")
 
 
 def wall_obstacles(P, with_parts=True):
@@ -359,7 +367,19 @@ def light_icon(sp, f, k):
         S.circle(sp, (x, y), 1.6 * k, "SD_Свет", S.C_RED, 25)
         _filled_circle(sp, (x, y), 0.95 * k, S.C_RED)
         return Point(x, y).buffer(1.7 * k)
+    if kind == "wall":                    # a wall light: a dot at the wall, the arrow shows where it shines
+        n = (f.get("nx", 0.0), f.get("ny", 1.0))
+        c = (x + n[0] * 1.3 * k, y + n[1] * 1.3 * k)
+        _filled_circle(sp, c, 1.3 * k, (64, 186, 166))
+        tip = (c[0] + n[0] * 3.6 * k, c[1] + n[1] * 3.6 * k)
+        S.line(sp, c, tip, "SD_Свет", (64, 186, 166), 25)
+        t = (-n[1], n[0])
+        S.fill(sp, [tip, (tip[0] - n[0] * 1.1 * k + t[0] * 0.6 * k, tip[1] - n[1] * 1.1 * k + t[1] * 0.6 * k),
+                    (tip[0] - n[0] * 1.1 * k - t[0] * 0.6 * k, tip[1] - n[1] * 1.1 * k - t[1] * 0.6 * k)], (64, 186, 166), "SD_Свет")
+        return Point(c).buffer(1.4 * k).union(LineString([c, tip]).buffer(0.6 * k))
     if kind == "chandelier":
+        if f.get("d"):                    # its real size: the drum in dashes
+            dashed_shape(sp, Point(x, y).buffer(f["d"] / 2.0, 48), 1.0 * k, 0.6 * k, S.C_AMBER, 18)
         S.fill(sp, Point(x, y).buffer(3.4 * k, 48), WHITE, "SD_Свет")
         S.circle(sp, (x, y), 3.4 * k, "SD_Свет", S.C_AMBER, 35)
         S.circle(sp, (x, y), 1.1 * k, "SD_Свет", S.C_AMBER, 25)

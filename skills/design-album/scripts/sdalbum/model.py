@@ -315,8 +315,20 @@ class Project:
             else:
                 g = unary_union([self.room_by_name[n]["shp"] for n in f.get("rooms", []) if n in self.room_by_name])
             out.append((f, g))
-        self._fz = out
-        return out
+        # a zone with its own outline (a strip of other tiles) lies over the zones taken by rooms; a later outline over
+        # an earlier one; boxes and counter frames standing on the floor are not covered
+        res = []
+        for i, (f, g) in enumerate(out):
+            over = [g2 for j, (f2, g2) in enumerate(out) if j != i and f2.get("polys") and (not f.get("polys") or j > i)]
+            if over:
+                g = g.difference(unary_union(over))
+            res.append((f, g))
+        stand = [b["shape"] for b in self.boxes if b.get("z0", 0) <= 0]
+        if stand:
+            cut = unary_union(stand)
+            res = [(f, g.difference(cut)) for f, g in res]
+        self._fz = res
+        return res
 
     def floor_of_room(self, name):
         for f in self.floors:

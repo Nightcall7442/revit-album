@@ -76,12 +76,22 @@ def decide(data, base_dir="."):
             log += IT.decide(d, base_dir)
         except Exception as ex:              # the album is built without the sketches, the report says why
             log.append(dict(topic="Мебель", msg="эскизы мебели не собраны: %r" % (ex,)))
+    from . import surfaces as SF             # boxes (installation, columns, bar frame) and floor zones of the model
+    try:
+        log += SF.decide(d, base_dir)
+    except Exception as ex:
+        log.append(dict(topic="Короба и полы", msg="не решены: %r" % (ex,)))
     _overlaps(d, base_dir, log)
-    notes = d.setdefault("meta", {}).setdefault("decisions", [])
-    for e in log:                            # the album gets the decision; the reason stays in report.md
+    # the album gets this run's decisions; a topic decided again replaces its lines of the previous run
+    # (re-runs piled up «Назначение помещений» with old seat counts)
+    topics = {e["topic"] for e in log}
+    old = d.setdefault("meta", {}).get("decisions", [])
+    notes = [s for s in old if s.split(":", 1)[0] not in topics]
+    for e in log:                            # the reason stays in report.md
         line = "%s: %s" % (e["topic"], e["msg"])
         if line not in notes:
             notes.append(line)
+    d["meta"]["decisions"] = notes
     return d, log
 
 
@@ -403,6 +413,17 @@ LIGHT_SPEC_MODEL = {
 }
 
 
+def _model_name(name):
+    """'Eichholtz_Chandelier-Tissot_S_002' -> 'Eichholtz Tissot S'; 'Baba_Sconce1' -> 'Baba'"""
+    if not name:
+        return ""
+    s = re.sub(r"[_\-]+", " ", name)
+    s = re.sub(r"(?i)\b(chandelier|sconce|lamp|light|pendant|group|object|mesh)\b", " ", s)
+    s = re.sub(r"\s*\d+\s*$", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return "" if len(s) < 3 or re.fullmatch(r"[\d\s]+", s) else s
+
+
 def _lights_from_model(d, base_dir, log):
     if d.get("lighting") or not d.get("_lights"):
         return
@@ -443,6 +464,27 @@ def _lights_from_model(d, base_dir, log):
         if l["z0"] >= C - 5:
             hidden += 1                                    # above the suspended ceiling: not seen, not built
             continue
+        size = max(x1 - x0, y1 - y0)
+        on_track = any(rn == r["name"] and t.distance(p) <= 120 and abs(l["z1"] - z) <= 260 for t, z, rn in tracks)
+        if not on_track and (l.get("low") or l["z1"] < C - 400):   # well below the ceiling, at a wall: a wall light
+            face = None
+            for seg, n in T.wall_faces(P, r, 0.0, kinds=()):
+                dd = seg.distance(p)
+                if dd <= (300 if l.get("low") else 150) and (face is None or dd < face[0]):
+                    face = (dd, seg, n)
+            if face is not None:
+                _, seg, n = face
+                q = seg.interpolate(seg.project(p))
+                out.append(dict(kind="wall", x=T.snap(q.x), y=T.snap(q.y), nx=n[0], ny=n[1],
+                                h=int(round((l["z0"] + l["z1"]) / 20.0) * 10), group=r["name"], source="модель",
+                                model=_model_name(l.get("name"))))
+                continue
+            if l.get("low"):
+                continue                                   # a lamp standing on furniture: not a fixture of the plan
+        if size >= 500 and l["z1"] - l["z0"] >= 300:       # a big body hanging under the ceiling: a chandelier
+            out.append(dict(kind="chandelier", x=T.snap(p.x), y=T.snap(p.y), d=int(round(size / 10.0) * 10),
+                            z=int(round(l["z0"] / 10.0) * 10), group=r["name"], source="модель", model=_model_name(l.get("name"))))
+            continue
         on = [(t, z) for t, z, rn in tracks if rn == r["name"] and t.distance(p) <= 120 and abs(l["z1"] - z) <= 260]
         if on:
             t, z = on[0]
@@ -468,13 +510,23 @@ def _lights_from_model(d, base_dir, log):
         uniq.append(o)
     # a fixture closer than 300 to a wall face (a downlight in a cubicle corner) is kept: it is the design
     for o in uniq:
-        if o["kind"] != "track":
+        if o["kind"] not in ("track", "chandelier"):
             o.pop("z", None)
     d["lighting"] = uniq
     spec = d.setdefault("lighting_spec", {})
     for o in uniq:
         if o["kind"] in LIGHT_SPEC_MODEL:
             spec.setdefault(o["kind"], LIGHT_SPEC_MODEL[o["kind"]])
+    ch = [o for o in uniq if o["kind"] == "chandelier"]
+    if ch:
+        nm = next((o["model"] for o in ch if o.get("model")), "")
+        spec["chandelier"] = "Люстра подвесная%s Ø%d, низ %s от пола (по модели; эскиз изделия)" % (
+            (" " + nm) if nm else "", max(o["d"] for o in ch), ", ".join(sorted({("+%.3f" % (o["z"] / 1000.0)).replace(".", ",") for o in ch})))
+    wl = [o for o in uniq if o["kind"] == "wall"]
+    if wl:
+        nm = next((o["model"] for o in wl if o.get("model")), "")
+        spec["wall"] = "Бра настенное%s, центр %s от пола (по модели)" % (
+            (" " + nm) if nm else "", ", ".join(sorted({("+%.3f" % (o["h"] / 1000.0)).replace(".", ",") for o in wl})))
     tz = sorted({t[1] for t in tracks})
     if tz:
         spec["track"] = "Шинопровод однофазный, подвесной на тросах, низ %s (по модели)" % ", ".join(
@@ -482,6 +534,7 @@ def _lights_from_model(d, base_dir, log):
     from collections import Counter
     cnt = Counter(o["kind"] for o in uniq)
     names = {"track": "шинопроводы", "track_spot": "трековые споты", "surface": "накладные", "pendant": "подвесы",
+             "chandelier": "люстры", "wall": "бра",
              "spot": "встраиваемые", "spot_ip44": "встраиваемые IP44"}
     D(log, "Освещение", "светильники перенесены из модели дизайнера: " + ", ".join("%s %d" % (names.get(k, k), v) for k, v in cnt.items())
       + ("; скрытые за подвесным потолком / вне плана не переносились (%d)" % hidden if hidden else ""),

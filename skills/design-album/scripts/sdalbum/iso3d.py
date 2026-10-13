@@ -319,3 +319,122 @@ def render_rooms(P, names, out_png, elev=35, azim=-58, low=300):
     if not faces:
         return None
     return raster3d.render(faces, out_png, elev=elev, azim=azim, width=1500)
+
+
+# ------------------------------------------------------------------ 3D view with the models of the scene
+def _poly_tris(poly, z):
+    """Shapely polygon (holes allowed) -> triangles at height z (constrained Delaunay, inside only)."""
+    from shapely.geometry import Polygon as _Pg
+    out = []
+    for p in (poly.geoms if hasattr(poly, "geoms") else [poly]):
+        if p.is_empty or p.geom_type != "Polygon" or p.area < 10:
+            continue
+        try:
+            from shapely import constrained_delaunay_triangles
+            tri = constrained_delaunay_triangles(p)
+            ts = list(tri.geoms)
+        except Exception:
+            from shapely.ops import triangulate
+            ts = [t for t in triangulate(p) if p.contains(t.representative_point())]
+        for t in ts:
+            cs = list(t.exterior.coords)[:3]
+            out.append([(x, y, z) for x, y in cs])
+    return out
+
+
+def _prism_tris(poly, z0, z1):
+    T = _poly_tris(poly, z1)
+    for p in (poly.geoms if hasattr(poly, "geoms") else [poly]):
+        if p.is_empty or p.geom_type != "Polygon":
+            continue
+        for ring in [p.exterior] + list(p.interiors):
+            cs = list(ring.coords)
+            for a, b in zip(cs[:-1], cs[1:]):
+                T.append([(a[0], a[1], z0), (b[0], b[1], z0), (b[0], b[1], z1)])
+                T.append([(a[0], a[1], z0), (b[0], b[1], z1), (a[0], a[1], z1)])
+    return T
+
+
+def render_models(P, out_png, d=None, elev=40.0, azim=-58.0, width=1900, cut=CUT):
+    """The dollhouse with the real furniture of the scene: the item meshes (also of the bought pieces that have no
+    sketch) at their places, the rest as blocks; floors coloured by zone, boxes, walls cut at +1.45."""
+    from . import items3d, raster3d
+    from shapely import affinity
+    T, C = [], []
+
+    def add(tris, rgb):
+        if not len(tris):
+            return
+        T.extend(tris)
+        C.extend([tuple(c / 255.0 for c in rgb)] * len(tris))
+    try:
+        from .sheets_plans import floor_tints
+        tints = floor_tints(P)
+    except Exception:
+        tints = {}
+    zones = P.floor_zones()
+    for f, g in zones:
+        add(_poly_tris(g, 0.0), tints.get(f["id"], (215, 217, 220)))
+    if not zones:
+        add(_poly_tris(unary_union([r["shp"] for r in P.rooms]), 0.0), (214, 186, 146))
+    walls = unary_union([w["shape"] for w in P.walls if w["kind"] != "box"])
+    doors = unary_union([P.open_shape[o["id"]] for o in P.openings if o["kind"] in ("door", "balcony", "passage")] or [Polygon()])
+    wins = unary_union([P.open_shape[o["id"]] for o in P.openings if o["kind"] == "window"] or [Polygon()])
+    add(_prism_tris(walls.difference(doors).difference(wins), 0.0, cut), (236, 234, 230))
+    add(_prism_tris(wins, 0.0, 900.0), (236, 234, 230))
+    for b in P.boxes:
+        shp = b["shape"].difference(P.mass)
+        rgb = (150, 52, 58) if b.get("box") in ("seat", "column", "pipe", "install") else (120, 112, 104)
+        add(_prism_tris(shp, 0.0, min(cut, b.get("h", 1200))), rgb)
+    covered = []
+    items = list((d or {}).get("items") or P.d.get("items") or []) + list((d or {}).get("_items_bought") or P.d.get("_items_bought") or [])
+    for it in items:
+        if it.get("kind") in ("chandelier", "sconce") or (it.get("z0") or 0) > cut:
+            continue
+        try:
+            m = items3d.load(P, it)
+        except Exception:
+            m = None
+        if m is None or not it.get("places"):
+            continue
+        tr, cols, _ = m.tris(props=True, colour=True)
+        if not len(tr):
+            continue
+        if len(tr) > 60000:                     # thin dense meshes for the overview
+            sel = np.linspace(0, len(tr) - 1, 60000).astype(int)
+            tr, cols = tr[sel], cols[sel]
+        for pl in it["places"]:
+            x, y = pl[0], pl[1]
+            a = np.radians(pl[2] if len(pl) > 2 else 0.0)
+            R = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
+            t2 = tr.copy()
+            t2[:, :, :2] = t2[:, :, :2] @ R.T + np.array([x, y])
+            t2[:, :, 2] += (it.get("z0") or 0)
+            keep = t2[:, :, 2].min(1) <= cut
+            T.extend(t2[keep])
+            C.extend([tuple(c) for c in cols[keep]])
+            try:
+                covered.append(affinity.translate(affinity.rotate(Polygon(it.get("foot") or [(-it["size"][0] / 2, -it["size"][1] / 2),
+                    (it["size"][0] / 2, -it["size"][1] / 2), (it["size"][0] / 2, it["size"][1] / 2), (-it["size"][0] / 2, it["size"][1] / 2)]),
+                    np.degrees(a), origin=(0, 0)), x, y).buffer(0))
+            except Exception:
+                pass
+    cov = unary_union(covered) if covered else Polygon()
+    for f in P.furniture:                        # what the models do not cover: blocks
+        kd = f.get("kind", "furn")
+        if kd in SKIP:
+            continue
+        g = Polygon(f["poly"]).buffer(0)
+        if not cov.is_empty and g.intersection(cov).area > 0.5 * g.area:
+            continue
+        if kd == "counter" and any(b.get("box") == "bar" for b in P.boxes):
+            continue
+        z0, z1, col = FURN_H.get(kd, (0, 400, (220, 220, 220)))
+        if "z" in f:
+            z0, z1 = f["z"]
+        add(_prism_tris(g, z0, min(z1, cut)), col)
+    if not T:
+        return None
+    raster3d.render_painter(np.asarray(T, float), np.asarray(C, float), out_png, elev=elev, azim=azim, width=width, ss=2,
+                            margin=0.02, edge_rgb=(90, 90, 92), crop=True)
+    return out_png

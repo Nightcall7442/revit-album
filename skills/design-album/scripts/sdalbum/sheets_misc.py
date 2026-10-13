@@ -140,6 +140,29 @@ def client_questions(A):
     return out
 
 
+def _merged_title(grp, titles):
+    """'Санузлы. План, развёртки А, Б' + 'Санузлы. Развёртки В, Г' + 'Санузлы. Аксонометрия' ->
+    'Санузлы. План, развёртки А–Г, аксонометрия'"""
+    import re
+    plan = any("План" in t for t in titles)
+    iso = any("Аксонометрия" in t for t in titles)
+    letters = []
+    for t in titles:
+        m = re.search(r"[Рр]азвёртк[аи] ([А-ЯЁ](?:, [А-ЯЁ])*)", t)
+        if m:
+            letters += [x.strip() for x in m.group(1).split(",")]
+    parts = []
+    if plan:
+        parts.append("план")
+    if letters:
+        parts.append(("развёртки %s–%s" % (letters[0], letters[-1])) if len(letters) > 2 else
+                     ("развёртки " + ", ".join(letters)) if len(letters) > 1 else "развёртка " + letters[0])
+    if iso:
+        parts.append("аксонометрия")
+    txt = ", ".join(parts)
+    return "%s. %s" % (grp, txt[:1].upper() + txt[1:])
+
+
 def general(A, no, title, scale):
     P = A.P
     psp = A.make_sheet(no, title, scale, "Состав альбома, общие указания, экспликация помещений")
@@ -151,11 +174,21 @@ def general(A, no, title, scale):
             sc = ("1:%d" % ks[0]) if len(ks) == 1 else ("1:%d–1:%d" % (ks[0], ks[-1]) if ks else "-")
             first, last = sk[0][2].split(" — ")[0].replace("Мебель. ", ""), sk[-1][2].split(" — ")[0].replace("Мебель. ", "")
             rows.append(["%02d–%02d" % (sk[0][0], sk[-1][0]) if len(sk) > 1 else "%02d" % n,
-                         "Мебель. Эскизы изделий %s…%s" % (first, last) if len(sk) > 1 else t, sc])
+                         "Мебель. Эскизы изделий %s…%s" % (first, last) if len(sk) > 1 else t, sc, None, t])
             continue
         if sk and any(n == x[0] for x in sk):
             continue
-        rows.append(["%02d" % n, t, s or "-"])
+        grp = t.split(". ")[0] if k == "elevations" and ". " in t else None
+        if grp and rows and rows[-1][3] == grp:      # the elevations of one room: one line «Зал. Развёртки А–Д»
+            prev = rows[-1]
+            prev[0] = "%s–%02d" % (prev[0].split("–")[0], n)
+            prev[4].append(t)
+            prev[1] = _merged_title(grp, prev[4])
+            if s and s not in prev[2]:
+                prev[2] = prev[2] + ", " + s
+            continue
+        rows.append(["%02d" % n, t, s or "-", grp, [t]])
+    rows = [r[:3] for r in rows]
     yb = S.table(psp, 24, 256, [14, 118, 40], ["Лист", "Наименование", "Масштаб"], rows, h=1.8, aligns=["C", "L", "C"],
                  title="Ведомость листов", head_h=6.0, zebra=True)
     notes = A.note_lines("general", [
@@ -199,7 +232,13 @@ def general(A, no, title, scale):
     try:
         from . import iso3d
         png = os.path.join(A.out_dir, "iso.png")
-        if iso3d.render(P, png):
+        try:                                  # the furniture models of the scene; blocks when there are none
+            got = iso3d.render_models(P, png) if P.d.get("items") else None
+        except Exception as ex:
+            A.issues.append(dict(code="ISO_MODELS", level="warning", sheet=A.cur_title, msg=repr(ex)))
+            got = None
+        models = bool(got)
+        if got or iso3d.render(P, png):
             iso = A.image("iso.png", png)
             from PIL import Image
             iw, ih = Image.open(png).size
@@ -208,13 +247,16 @@ def general(A, no, title, scale):
             ww = hh * iw / ih
             psp.add_image(iso, insert=(214 + (198 - ww) / 2, q_top), size_in_units=(ww, hh),
                           dxfattribs={"layer": "SD_Рамка"}).rgb = (254, 254, 254)
-            A.title_note(psp, 214, yb2 - 12, "Аксонометрия", "разрез на отм. +1,450, мебель условно")
+            A.title_note(psp, 214, yb2 - 12, "Аксонометрия", "разрез на отм. +1,450, мебель - %s" % (
+                "модели из 3D-сцены" if models else "условно"))
     except Exception as ex:   # 3D view is decorative: never block the album
         A.issues.append(dict(code="ISO_FAILED", level="warning", sheet=A.cur_title, msg=str(ex)))
     # zone scheme
-    blk, off = A.model_block(no, 0)
     x0, y0, x1, y1 = P.bounds
-    avail = max(30.0, min(58.0, notes_bottom - 12.0 - 36.0))   # the scheme sits under the notes, never on them
+    if notes_bottom - 12.0 - 36.0 < 24.0:      # a long list of sheets: no room under the notes - the 3D view and the
+        return                                 # explication show the rooms; a scheme on the notes is worse than none
+    blk, off = A.model_block(no, 0)
+    avail = max(24.0, min(58.0, notes_bottom - 12.0 - 36.0))   # the scheme sits under the notes, never on them
     kk = max(100.0, (x1 - x0 + 600) / 95.0, (y1 - y0 + 600) / avail)
     for r in P.rooms:
         S.fill(blk, r["shp"], ZONE_RGB.get(r.get("cls", "living"), (236, 224, 202)), "SD_Штриховка")

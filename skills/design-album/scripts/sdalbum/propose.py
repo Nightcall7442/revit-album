@@ -83,6 +83,9 @@ def propose(data, base_dir=".", sections=None):
     if log:                                  # a statement in the general notes, not a question to the client
         txt = "По нормам как проектное предложение выполнены (отмечены на листах): %s." % (
             ", ".join(sorted(set(e["section"] for e in log))))
+        cur = d.get("notes", {}).get("general")         # the statement of an earlier run is replaced, not repeated
+        if isinstance(cur, dict):
+            cur["add"] = [x for x in cur.get("add", []) if not x.startswith("По нормам как проектное предложение выполнены")]
         _note(d, "general", txt)
     return d, log
 
@@ -308,13 +311,13 @@ def _plumbing(d, P, log):
         if kind == "shower":
             c = g.centroid
             out.append(dict(kind="К50", x=T.snap(c.x), y=T.snap(c.y), h=0, fixture="Трап душевой", proposed=True))
-        back = T.back_side(P, g, room)
+        hung = "подвес" in f.get("name", "").lower() or f.get("hung")
+        back = T.back_side(P, g, room, max_d=450 if (kind == "wc" and hung) else 150)
         if back is None:
             skipped.append(f["name"])
             continue
         seg, n, q = back
         lf = _left(n)
-        hung = "подвес" in f.get("name", "").lower() or f.get("hung")
 
         def at(along, kd, h, fx=name):
             p = _on_face_point(P, room, q, n, -along, clear=10, below=h)   # +along = to the viewer's left
@@ -1293,7 +1296,8 @@ def _fixture_elev(f, g, E, room, P):
 def _backed_on(P, f, g, room, E):
     """The item stands against this very wall (its back face lies on the elevation line), not against the wall
     meeting it at the corner."""
-    back = T.back_side(P, g, room)
+    hung = f.get("kind") == "wc" and (f.get("hung") or "подвес" in (f.get("name") or "").lower())
+    back = T.back_side(P, g, room, max_d=450 if hung else 150)      # a hung WC: in front of its box
     if back is None:
         return False
     seg = back[0]
@@ -1359,9 +1363,39 @@ def _elevations(d, P, log):
                     continue
                 if any(f.get("kind") == "wc" and f.get("hung") and _backed_on(P, f, g, room, E) for f, g in furn):
                     top = min([op["z0"] for op in wins if op["z0"] > 600] + [1200])
+                    ib = [b for b in P.boxes if b.get("box") == "install" and b["shape"].distance(E.line) < 300]
+                    if ib:                               # the box of the partitions plan (its height decided there)
+                        top = ib[0].get("h", top)
                     items.insert(0, dict(type="panel", s0=0, s1=_r(E.L), z0=0, z1=top,
                                          label=("короб инсталляции %+.3f" % (top / 1000.0)).replace(".", ",")))
-                if is_wet:
+                F = P.finishes or {}
+                if is_wet and F.get("source") == "model" and not F.get("by_class", {}).get("wet"):
+                    # the model's finish (plaster) with tile only where the model / the boxes have it: the
+                    # installation box face; no tiled walls the designer did not draw
+                    e["base"] = "paint"
+                    tz = []
+                    for b in P.boxes:
+                        if b.get("box") not in ("install", "pipe") or b["shape"].distance(E.line) > 300:
+                            continue
+                        x0, y0, x1, y1 = b["shape"].bounds
+                        ss = sorted(E.s_of(x, y) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
+                        s0, s1 = max(0.0, ss[0]), min(E.L, ss[-1])
+                        if s1 - s0 > 50:
+                            tz.append((s0, s1, min(H, b.get("h", 1200))))
+                    zones = []
+                    cur = 0.0
+                    for s0, s1, zt in sorted(tz):
+                        if s0 > cur:
+                            zones.append(dict(s0=_r(cur), s1=_r(s0), z0=0, z1=H, mat="paint"))
+                        zones.append(dict(s0=_r(s0), s1=_r(s1), z0=0, z1=_r(zt), mat="tile",
+                                          tile=list(F.get("tile") or [100, 100])))
+                        if zt < H:
+                            zones.append(dict(s0=_r(s0), s1=_r(s1), z0=_r(zt), z1=H, mat="paint"))
+                        cur = s1
+                    if cur < E.L:
+                        zones.append(dict(s0=_r(cur), s1=_r(E.L), z0=0, z1=H, mat="paint"))
+                    e["zones"] = zones
+                elif is_wet:
                     e["base"] = "tile"
                     e["zones"] = [dict(s0=0, s1=_r(E.L), z0=0, z1=H, mat="tile")]
                 else:
@@ -1387,8 +1421,16 @@ def _elevations(d, P, log):
                 out.append(e)
         if len(out) > n_before:
             L(log, "развёртки", "развёртки «%s»: %d стен%s" % (gname, len(out) - n_before,
-                                                             " (плитка на всю высоту)" if is_wet else " с сантехникой / оборудованием"),
+                                                             (" (плитка на всю высоту)" if not (P.finishes or {}).get("source") == "model" else " (отделка по модели, плитка на коробе инсталляции)") if is_wet else " с сантехникой / оборудованием"),
               len(out) - n_before)
+    try:
+        n0 = len(out)
+        out += _feature_walls(d, P)
+        if len(out) > n0:
+            L(log, "развёртки", "развёртки зала: %d стен с вывесками / светильниками / встроенной мебелью" % (len(out) - n0),
+              len(out) - n0)
+    except Exception as ex:                       # the album is built without them, the report says why
+        L(log, "развёртки", "развёртки стен зала не построены: %r" % (ex,))
     if out:
         d["elevations"] = out
         _note(d, "elevations", "Развёртки - проектное предложение: раскладка плитки и высоты приборов уточняются по выбранной "
@@ -1399,3 +1441,161 @@ def print_log(log):
     print("Проектное предложение по нормам: %d раздел(ов)" % len(log))
     for e in log:
         print("  * [%s] %s" % (e["section"], e["msg"]))
+
+
+
+# ------------------------------------------------------------------ feature walls of the hall
+def _silhouette(m, place, z0, E, px=12.0):
+    """Front view outline of an item mesh standing at the wall of elevation E: [(s, z)] (rasterised, traced)."""
+    from PIL import Image, ImageDraw
+    import numpy as np
+    T, _, _ = m.tris(props=True, colour=False)
+    if not len(T):
+        return None
+    if len(T) > 40000:
+        T = T[np.linspace(0, len(T) - 1, 40000).astype(int)]
+    a = math.radians(place[2] if len(place) > 2 else 0.0)
+    xw = T[:, :, 0] * math.cos(a) - T[:, :, 1] * math.sin(a) + place[0]
+    yw = T[:, :, 0] * math.sin(a) + T[:, :, 1] * math.cos(a) + place[1]
+    S_ = (xw - E.a[0]) * E.ux[0] + (yw - E.a[1]) * E.ux[1]
+    Z = T[:, :, 2] + (z0 or 0)
+    s0, s1, zt = float(S_.min()), float(S_.max()), float(Z.max())
+    nx, ny = int((s1 - s0) / px) + 6, int(zt / px) + 6
+    im = Image.new("L", (nx, ny), 0)
+    dr = ImageDraw.Draw(im)
+    X = (S_ - s0) / px + 3
+    Y = ny - 3 - Z / px
+    for xs, ys in zip(X, Y):
+        dr.polygon([(xs[0], ys[0]), (xs[1], ys[1]), (xs[2], ys[2])], fill=255)
+    arr = (np.asarray(im) > 0).astype(float)
+    try:
+        import contourpy
+        lines = contourpy.contour_generator(z=arr).lines(0.5)
+    except Exception:
+        return None
+    best = None
+    for ln in lines:
+        if len(ln) < 4:
+            continue
+        g = Polygon([((x - 3) * px + s0, (ny - 3 - y) * px) for x, y in ln]).buffer(0)
+        if not g.is_empty and (best is None or g.area > best.area):
+            best = g
+    if best is None:
+        return None
+    if best.geom_type == "MultiPolygon":
+        best = max(best.geoms, key=lambda q: q.area)
+    best = best.simplify(8)
+    return [[_r(x), _r(max(0.0, y))] for x, y in list(best.exterior.coords)[:-1]]
+
+
+def _feature_walls(d, P):
+    """Walls of public rooms that carry the design (a sign, wall lights, built-in furniture, tiled boxes) get an
+    elevation: what hangs where and at what height - the builder places it by this sheet, not by the render."""
+    from . import items as IT
+    from . import items3d
+    from .sheets_details import Elev
+    out = []
+    rooms = [r for r in P.rooms if r.get("cls") in ("public", "living", "hall") or r.get("cls") is None]
+    texts = d.get("_texts") or []
+    signs = [it for it in d.get("items") or [] if it.get("kind") == "sign"]
+    F = P.finishes or {}
+    for room in rooms:
+        H = int(room.get("ceiling_level") or P.ceiling)
+        letters = iter(ELEV_LETTERS)
+        for a, b in _faces_cw(room):
+            L_ = math.hypot(b[0] - a[0], b[1] - a[1])
+            if L_ < 1500:
+                continue
+            if LineString([a, b]).intersection(P.mass.buffer(25)).length < 0.6 * L_:
+                continue                                # a separation line (the bar's front), not a wall
+            e = dict(group=room["name"], room=room["name"], a=[_r(a[0]), _r(a[1])], b=[_r(b[0]), _r(b[1])], height=H,
+                     proposed=True, base="paint", feature=True)
+            E = Elev(P, e)
+            items, zones, labels, extra_s, extra_h, what = [], [], [], [], [], []
+            # boxes at this wall: tiled faces
+            for bx in P.boxes:
+                if bx.get("box") not in ("seat", "pipe", "column", "low") or \
+                        bx["shape"].distance(E.line) > (450 if bx.get("box") == "seat" else 150):
+                    continue
+                x0, y0, x1, y1 = bx["shape"].bounds
+                ss = sorted(E.s_of(x, y) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
+                s0, s1 = max(0.0, ss[0]), min(L_, ss[-1])
+                if s1 - s0 < 100:
+                    continue
+                zt = min(H, bx.get("h", 1200))
+                zones.append(dict(s0=_r(s0), s1=_r(s1), z0=0, z1=_r(zt), mat="tile", tile=list(F.get("tile") or [100, 100]),
+                                  front=bx.get("box") == "seat"))
+                labels.append(dict(text="%s %s" % (bx["id"], "плитка" if bx.get("box") == "seat" else "короб"),
+                                   s=_r((s0 + s1) / 2), z=_r(min(zt * 0.5, 600))))
+                extra_s += [_r(s0), _r(s1)]
+                extra_h.append(_r(zt))
+                what.append(bx["id"])
+            # built-in / wall-backed furniture: its front view outline from the model
+            for it in d.get("items") or []:
+                if it.get("kind") not in IT.WALL_BACKED and it.get("kind") not in ("bench", "sofa"):
+                    continue
+                for place in it.get("places", []):
+                    try:
+                        g = IT.footprint(it, place)
+                    except Exception:
+                        continue
+                    if g.distance(E.line) > 450 or not (-200 <= E.s_of(g.centroid.x, g.centroid.y) <= L_ + 200):
+                        continue
+                    try:
+                        m = items3d.load(P, it)
+                    except Exception:
+                        m = None
+                    pts = _silhouette(m, place, it.get("z0"), E) if m is not None else None
+                    if not pts:
+                        continue
+                    items.append(dict(type="poly", pts=pts, rgb=[226, 220, 210], label=it.get("pos", "")))
+                    xs = [p[0] for p in pts]
+                    extra_s += [_r(max(0, min(xs))), _r(min(L_, max(xs)))]
+                    extra_h.append(_r(max(p[1] for p in pts)))
+                    what.append(it.get("pos", ""))
+            # signs (text objects of the scene) on this wall
+            for t in texts:
+                x, y, z = t["pos"][0], t["pos"][1], (t["pos"][2] if len(t["pos"]) > 2 else 1500)
+                if E.line.distance(Point(x, y)) > 350:
+                    continue
+                s_ = E.s_of(x, y)
+                if not (0 <= s_ <= L_):
+                    continue
+                words = set(re.findall(r"\w{3,}", t["text"].lower()))
+                mark = next((sg.get("pos") for sg in signs if words & set(re.findall(r"\w{3,}", (sg.get("name") or "").lower()))), None)
+                items.append(dict(type="sign", s=_r(s_), z=_r(z), text=t["text"], light=t.get("light"), mark=mark))
+                extra_s.append(_r(s_))
+                extra_h.append(_r(z))
+                what.append("«%s»" % t["text"])
+            # wall lights
+            for f in P.lighting:
+                if f["kind"] != "wall" or E.line.distance(Point(f["x"], f["y"])) > 200:
+                    continue
+                s_ = E.s_of(f["x"], f["y"])
+                if 0 <= s_ <= L_:
+                    items.append(dict(type="wall_light", s=_r(s_), z=_r(f.get("h", 1600))))
+                    extra_s.append(_r(s_))
+                    extra_h.append(_r(f.get("h", 1600)))
+                    what.append("бра")
+            if not what or not any(w.startswith("«") or w == "бра" or w.startswith("М-") for w in what):
+                continue
+            if zones:                                   # the rest of the wall: its base finish
+                cur, zz = 0.0, []
+                for z_ in sorted(zones, key=lambda q: q["s0"]):
+                    if z_["s0"] > cur:
+                        zz.append(dict(s0=_r(cur), s1=z_["s0"], z0=0, z1=H, mat="paint"))
+                    zz.append(z_)
+                    if z_["z1"] < H:
+                        zz.append(dict(s0=z_["s0"], s1=z_["s1"], z0=z_["z1"], z1=H, mat="paint"))
+                    cur = max(cur, z_["s1"])
+                if cur < L_:
+                    zz.append(dict(s0=_r(cur), s1=_r(L_), z0=0, z1=H, mat="paint"))
+                e["zones"] = zz
+            e["items"] = items
+            e["labels"] = labels
+            e["extra_s"] = sorted(set(extra_s))
+            e["extra_heights"] = sorted(set(extra_h))
+            e["fixtures"] = []
+            e["label"] = next(letters)
+            out.append(e)
+    return out

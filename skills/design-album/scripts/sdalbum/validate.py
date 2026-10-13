@@ -355,8 +355,8 @@ def _floors(P):
             if ov > 0.1e6:
                 out.append(I("FLOOR_OVERLAP", "error", "покрытия %s и %s перекрываются (%.2f м²)" % (zones[i][0]["id"], zones[j][0]["id"], ov / 1e6)))
     if zones:
-        allz = unary_union([g for _, g in zones])
-        for r in P.rooms:
+        allz = unary_union([g for _, g in zones] + [b["shape"] for b in P.boxes if b.get("z0", 0) <= 0])
+        for r in P.rooms:                    # under a box / a counter frame there is no covering: that is not a gap
             cov = r["shp"].intersection(allz).area / r["shp"].area
             if cov < 0.95:
                 out.append(I("FLOOR_UNCOVERED", "warning", "«%s»: покрытие пола задано на %.0f%% площади" % (r["name"], cov * 100)))

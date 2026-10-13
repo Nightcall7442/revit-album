@@ -216,6 +216,23 @@ def shift_extras(d, dx, dy):
             it["rect"] = rect(it["rect"])
     for it in d.get("items", []):                 # furniture items of the scene: their places on the plan
         it["places"] = [[p[0] + dx, p[1] + dy] + list(p[2:]) for p in it.get("places", [])]
+    for t in d.get("_texts", []):                 # signs of the scene (text objects)
+        t["pos"] = [t["pos"][0] + dx, t["pos"][1] + dy] + list(t["pos"][2:])
+    for lg in d.get("_ledges", []):               # wall parts standing proud under a window
+        lg["rect"] = rect(lg["rect"])
+        lg["wall_rect"] = rect(lg["wall_rect"])
+    for k in ("_floor_src", "_box_src"):          # floor coverings and boxes of the scene
+        for it in d.get(k, []):
+            if it.get("poly"):
+                it["poly"] = [[x + dx, y + dy] for x, y in it["poly"]]
+            if it.get("polys"):
+                it["polys"] = [[[x + dx, y + dy] for x, y in pg] for pg in it["polys"]]
+            if it.get("rect"):
+                it["rect"] = rect(it["rect"])
+            if it.get("inner"):
+                it["inner"] = rect(it["inner"])
+            if it.get("origin"):
+                it["origin"] = [it["origin"][0] + dx, it["origin"][1] + dy]
 
 
 def _wall_centres(shell, tmin=150, tmax=700, lmin=1500):

@@ -23,7 +23,8 @@ import numpy as np
 from . import items3d
 
 KIND_ORDER = ["table", "coffee_table", "chair", "armchair", "sofa", "bench", "shelving", "bookshelf", "records",
-              "decor", "sign", "item"]
+              "chandelier", "sconce", "decor", "sign", "item"]
+LIGHT_KINDS = ("chandelier", "sconce")
 RX = [
     ("bookshelf", r"(?i)bookshel|книжн"),
     ("records", r"(?i)vinyl|record|пластин"),
@@ -39,7 +40,7 @@ RX = [
 NAME = {"table": "Стол", "coffee_table": "Стол журнальный", "chair": "Стул", "armchair": "Кресло", "sofa": "Диван",
         "bench": "Скамья встроенная с мягкими элементами", "shelving": "Стеллаж", "bookshelf": "Полка книжная настенная",
         "records": "Полка для виниловых пластинок", "decor": "Декоративный элемент", "sign": "Вывеска световая",
-        "item": "Изделие"}
+        "chandelier": "Люстра подвесная", "sconce": "Бра настенное", "item": "Изделие"}
 PLAN_KIND = {"table": "table", "coffee_table": "table", "chair": "chair", "armchair": "armchair", "sofa": "sofa",
              "bench": "sofa", "shelving": "cabinet", "bookshelf": "cabinet", "records": "cabinet", "decor": "cabinet",
              "item": "cabinet"}
@@ -65,6 +66,8 @@ def _txt(it):
 
 def classify(it, m):
     """-> kind"""
+    if it.get("kind_hint"):
+        return it["kind_hint"]
     t = _txt(it)
     W, D, H = (m.size if m is not None else it.get("size", [0, 0, 0]))
     if m is not None:
@@ -111,8 +114,21 @@ def _round(it, m):
         return False
 
 
+def _brand(it):
+    """'Eichholtz_Chandelier-Tissot_S_' -> 'Eichholtz Tissot S' (the catalogue piece the designer put in the model)"""
+    s = re.sub(r"[_\-]+", " ", str(it.get("src") or ""))
+    s = re.sub(r"(?i)\b(chandelier|sconce|lamp|light|pendant|group|object|mesh)\b", " ", s)
+    s = re.sub(r"\s*\d+\s*$", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return "" if len(s) < 3 or re.fullmatch(r"[\d\s]+", s) else s
+
+
 def name_of(kind, it, m, P=None):
     W, D, H = [round(x) for x in (m.size if m is not None else it["size"])]
+    if kind in LIGHT_KINDS:
+        b = _brand(it)
+        return "%s%s Ø%d" % (NAME[kind], (" " + b) if b else "", round(max(W, D) / 10.0) * 10) if kind == "chandelier" else \
+            "%s%s" % (NAME[kind], (" " + b) if b else "")
     if kind in ("table", "coffee_table"):
         base = NAME[kind]
         if _round(it, m):
@@ -138,6 +154,13 @@ def elements(kind, m):
     if not body:
         return out
     H = m.size[2]
+    if kind in LIGHT_KINDS:
+        main = max(body, key=lambda ip: len(ip[1].f))
+        out.append(("Корпус / обод и бахрома" if kind == "chandelier" else "Корпус и плафон", "metal", main[0]))
+        out.append(("Источник света", "led", main[0]))
+        if kind == "chandelier":
+            out.append(("Подвес к потолку (штанга / цепь, чашка)", "metal", main[0]))
+        return out
     if kind in ("table", "coffee_table"):
         top = max(body, key=lambda ip: (float(ip[1].v[:, 2].max()), float(np.ptp(ip[1].v[:, 0]) * np.ptp(ip[1].v[:, 1]))))
         thin = float(np.ptp(top[1].v[:, 2])) < 0.35 * H
@@ -201,6 +224,17 @@ def notes_for(kind, it, extra=()):
                  "нагрузку от книг / пластинок без прогиба.")
     if kind == "bench":
         n.append("Основание — встроенное, по месту; облицовка — по образцу; матрасы — секциями, стыки над швами основания.")
+    if kind == "chandelier":
+        z = it.get("z0")
+        n.append("Низ люстры — на отметке %s от чистого пола (по модели); длина подвеса регулируется по месту." % (
+            ("+%.3f" % (z / 1000.0)).replace(".", ",") if z else "по модели"))
+        n.append("Крепление — к закладной / анкеру в плите перекрытия, рассчитанному не менее чем на 5-кратную массу "
+                 "светильника; распределительная коробка — над чашкой подвеса.")
+        n.append("Питание — линия освещения зала по плану; лампы LED 2700-3000 K, тип цоколя и мощность — по паспорту изделия.")
+    if kind == "sconce":
+        n.append("Высота установки и привязки — по развёртке стены и плану освещения; вывод кабеля в стене до чистовой отделки.")
+    if kind in LIGHT_KINDS and _brand(it):
+        n.append("Изделие серийное (%s) — заказ по артикулу производителя; аналог — того же размера и высоты подвеса." % _brand(it))
     n += list(extra)
     n.append("Размеры — по 3D-модели дизайн-проекта; для встроенных изделий — контрольный замер по месту до изготовления.")
     n.append("Материалы, цвет и фактура — по образцам, согласованным с дизайнером; деталировочные чертежи выполняет "
@@ -378,8 +412,26 @@ def decide(d, base):
         it["name"] = name_of(kind, it, m, P)
         els = elements(kind, m)
         it["elements"] = [dict(name=e, material=MAT.get(f, MAT[None]), fam=f, part=pi) for e, f, pi in els]
+        if kind in LIGHT_KINDS:                   # a catalogue fixture: its finishes from the model's material names
+            fin = [x for x in it.get("mats", []) if re.search(r"(?i)gold|brass|bronze|chrom|nickel|black|white|copper|латун|хром", x)]
+            mt = {"gold": "латунь / золото", "brass": "латунь", "bronze": "бронза", "chrom": "хром", "nickel": "никель",
+                  "black": "чёрный металл", "white": "белый", "copper": "медь"}
+            words = []
+            for x in fin:
+                for key_, ru in mt.items():
+                    if key_ in x.lower() and ru not in words:
+                        words.append(ru)
+            fin_txt = ", ".join(words) or "по каталогу производителя"
+            for e in it["elements"]:
+                if e["name"].startswith("Корпус"):
+                    e["material"] = "металл, отделка: %s (по модели и каталогу)" % fin_txt
+                elif e["name"].startswith("Источник"):
+                    e["material"] = "лампы LED 2700-3000 K, цоколь и мощность — по паспорту изделия"
+                    e["fam"] = None
+                elif e["name"].startswith("Подвес"):
+                    e["material"] = "цепь / штанга и потолочная чашка, отделка: %s" % (words[-1] if words else "по каталогу")
         extra = []
-        if kind == "bookshelf" or any(e["fam"] == "led" for e in it["elements"]):
+        if kind not in LIGHT_KINDS and (kind == "bookshelf" or any(e["fam"] == "led" for e in it["elements"])):
             extra.append("Подсветка — включается с общей группой зала; блок питания — в доступном месте (за "
                          "съёмной панелью), выводы кабеля — по плану розеток.")
         cols_ = _columns_inside(P, it) if kind in ("shelving", "bookshelf", "item") else []
@@ -401,7 +453,7 @@ def decide(d, base):
             if mm is not None:
                 it["foot"] = local_footprint(mm)
     for it in made:
-        if it.get("places"):
+        if it.get("places") and it.get("kind") not in LIGHT_KINDS:
             _settle(it, P)
     # positions: by room, then by type
     made.sort(key=lambda it: (min([order.get(r, 99) for r in it.get("rooms") or []] or [99]),
@@ -467,6 +519,12 @@ def apply_overrides(d, made, P):
                 it["notes"] = list(add) + [n for n in it.get("notes", []) if n not in add]
             it.update(st)
             it["auto_fields"] = sorted(st)
+    # bought pieces (no sketch) keep their models for the 3D view of the album
+    bought = {it["id"]: {k: v for k, v in it.items() if k in ("id", "src", "size", "z0", "places", "mesh", "foot")}
+              for it in out if it.get("skip") and it.get("mesh")}
+    for it in d.get("_items_bought") or []:        # a re-run on the working copy: the skipped pieces are gone from
+        bought.setdefault(it["id"], it)            # the items, their models stay for the 3D view
+    d["_items_bought"] = list(bought.values())
     return [it for it in out if not it.get("skip")]
 
 
@@ -485,6 +543,8 @@ def _to_plan(d, P):
         except Exception:
             polys.append(None)
     for it in d.get("items", []):
+        if it.get("kind") in LIGHT_KINDS:
+            continue                                     # hangs from the ceiling / on a wall: the lighting plan has it
         m = None
         for place in it.get("places", []):
             try:

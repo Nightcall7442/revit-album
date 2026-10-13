@@ -247,7 +247,9 @@ def test_multipoint_group_wired_once(make_project):
                                   controls=[{"key": "а", "group": "Комната", "mode": "pass"}]))
     P = make_project(mut)
     runs = [r for r in wiring_runs(P) if r["switch"] in ("В1", "В3")]
-    assert len(runs[0]["pts"]) == 7 and len(runs[1]["pts"]) == 2
+    # the first switch links the group as a spanning tree (6 fixtures: 1 line to the switch + 5 between them), the
+    # second only to its nearest fixture
+    assert len(runs[0]["segs"]) == 6 and len(runs[1]["segs"]) == 1
 
 
 @pytest.mark.slow
@@ -264,7 +266,8 @@ def test_sheet_heals_lines_through_texts(tmp_path):
         rep = qa.check_doc(A.doc)
         counts.append(sum(1 for v in rep.values() for i in v if i["code"] == "LINE_THROUGH_TEXT"))
         assert not [i for v in rep.values() for i in v if i["level"] == "error"]
-    assert counts[0] >= 3 and counts[1] == 0, counts
+    # since 1.4 the bindings run along the rows of fixtures and keep off the control lines: fewer crossings to heal
+    assert counts[0] >= 1 and counts[1] == 0, counts
 
 
 @pytest.mark.slow
