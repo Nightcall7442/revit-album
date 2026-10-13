@@ -34,6 +34,7 @@ def has_data(A, key):
         "sockets": bool(P.sockets),
         "plumbing": bool(P.plumbing),
         "finishes": bool(P.rooms),
+        "windows": any(t.get("division") for t in P.opening_types.values()),
     }.get(key, True)
 
 
@@ -115,6 +116,24 @@ def room_tags(A, sp, occ, style="compact", extra=None):
             if best is None or score < best[0]:
                 best = (score, c, g)
         _, c, g = best
+        if g.difference(region).area > 0.15 * g.area:   # a WC cubicle at 1:100: only the number (name, area -
+            cs_ = grid_candidates(region, 60.0)[:400] or [(region.representative_point().x, region.representative_point().y)]
+            bc = None                                     # in the explication / tables)
+            for c2 in cs_:
+                g2 = Point(c2).buffer(r * 1.15)
+                sc2 = occ.overlap(g2, ignore=("rug",)) + g2.difference(rm["shp"]).area * 4
+                if bc is None or sc2 < bc[0]:
+                    bc = (sc2, c2, g2)
+                if sc2 <= 1e-6:
+                    break
+            _, c2, g2 = bc
+
+            def draw_small(c2=c2, rm=rm):
+                S.fill(sp, Point(c2).buffer(r * 1.1), (255, 255, 255), "SD_Текст")
+                Y.mark_circle(sp, rm["num"], c2, k, r=1.7, h=1.8)
+            occ.defer(draw_small)
+            occ.add(g2, "tag")
+            continue
 
         def draw(c=c, g=g, lines=lines, n=n, area_s=area_s, ex=ex, rm=rm):
             left = c[0] - ww_of[id(rm)] / 2
@@ -650,8 +669,7 @@ def floors(A, no, title, scale):
             jl = zones[i][1].boundary.intersection(zones[j][1].buffer(8))
             for gg in (jl.geoms if hasattr(jl, "geoms") else [jl]):
                 if gg.geom_type == "LineString" and gg.length > 50:
-                    c = list(gg.coords)
-                    S.line(sp, c[0], c[-1], "SD_Акцент", BRONZE, 70)
+                    S.poly(sp, list(gg.coords), "SD_Акцент", False, BRONZE, 70)    # an L-shaped joint stays an L
     Y.draw_walls(sp, P, k)
     Y.draw_openings(sp, P, k, door_rgb=(150, 150, 150))
     reg_walls(A, occ)
@@ -745,12 +763,18 @@ def ceilings(A, no, title, scale):
     types = C.get("types", [{"id": "Т1", "desc": "Потолок ГКЛ, окраска", "level": P.ceiling}])
     tcol = {t["id"]: C_T[i % len(C_T)] for i, t in enumerate(types)}
     zones = C.get("zones", [])
+    OVER = ("cove", "beam", "rail")            # drawn over the ceiling, not a ceiling surface of their own
     rooms_u = unary_union([r["shp"] for r in P.rooms])
-    zu = unary_union([Polygon(z["poly"]) for z in zones if z.get("kind") != "cove"] or [Polygon()])
+    zu = unary_union([Polygon(z["poly"]) for z in zones if z.get("kind") not in OVER] or [Polygon()])
     t1 = rooms_u.difference(zu)
-    S.fill(sp, t1, tcol[types[0]["id"]], "SD_Штриховка")
+    by_type = {}
+    for rm in P.rooms:                         # every room in its own ceiling type (open slab / suspended)
+        tid = rm.get("ceiling_type", types[0]["id"])
+        part = rm["shp"].difference(zu)
+        by_type[tid] = by_type.get(tid, Polygon()).union(part)
+        S.fill(sp, part, tcol.get(tid, tcol[types[0]["id"]]), "SD_Штриховка")
     for z in zones:
-        if z.get("kind") == "cove":
+        if z.get("kind") in OVER:
             continue
         rgb = tcol.get(z["type"], (230, 230, 230))
         S.fill(sp, z["poly"], rgb, "SD_Штриховка")
@@ -760,6 +784,16 @@ def ceilings(A, no, title, scale):
     for z in zones:
         if z.get("kind") == "cove":
             S.fill(sp, z["poly"], (60, 60, 60), "SD_Тонкие")
+        elif z.get("kind") == "beam":           # a down-stand beam of the frame: hatched, dashed (above the cut)
+            S.hatch(sp, z["poly"], (150, 150, 155), "ANSI31", scale=0.35 * k, layer="SD_Штриховка")
+            Y.dashed_poly(sp, z["poly"], 0.8 * k, 0.4 * k, (70, 70, 75), 25)
+        elif z.get("kind") == "rail":           # a ceiling curtain rail: a dash-dot line along its axis
+            g = Polygon(z["poly"])
+            x0, y0, x1, y1 = g.bounds
+            a, b = (((x0, (y0 + y1) / 2.0), (x1, (y0 + y1) / 2.0)) if (x1 - x0) >= (y1 - y0)
+                    else (((x0 + x1) / 2.0, y0), ((x0 + x1) / 2.0, y1)))
+            Y.dashed(sp, a, b, 2.0 * k, 0.5 * k, BRONZE, 50, "SD_Тонкие")
+            occ.add(LineString([a, b]).buffer(0.6 * k), "sym")
     for f in P.lighting:
         if f["kind"] == "led":
             Y.dashed(sp, (f["x"], f["y"]), (f["x2"], f["y2"]), 1.2 * k, 0.6 * k, S.C_AMBER, 35, "SD_LED")
@@ -791,6 +825,8 @@ def ceilings(A, no, title, scale):
                 best = (sc_, pos)
         DM.chain(sp, vals, best[1], ext_of(best[1]), k, occ, vertical=not horiz)
     for z in zones:
+        if z.get("kind") in ("beam", "rail"):
+            continue
         g = Polygon(z["poly"])
         x0, y0, x1, y1 = g.bounds
         d = sc(A, 300)
@@ -829,9 +865,11 @@ def ceilings(A, no, title, scale):
         S.text(sp, rm.get("ceiling_type", types[0]["id"]), (c[0], c[1] - 3.0 * k), 1.8 * k, "MIDDLE_LEFT", bold=True, rgb=(60, 60, 60))
         occ.add(g, "tag")
     for z in zones:
+        if z.get("kind") == "rail":
+            continue
         g = Polygon(z["poly"])
         c = g.representative_point()
-        s = z["type"]
+        s = "Б" if z.get("kind") == "beam" else z["type"]
         if z.get("bottom"):
             s += "  %+.3f" % (z["bottom"] / 1000.0)
         s = s.replace(".", ",")
@@ -845,24 +883,29 @@ def ceilings(A, no, title, scale):
         items.append((_lg_fill(rgb, (90, 90, 90), "ANSI31" if t.get("kind") == "bulkhead" else None, (120, 140, 170)),
                       "%s - %s" % (t["id"], t.get("short", t.get("desc", "")))))
     items.append((_lg_sym(lambda p, cx, cy: Y.ceiling_mark(p, (cx - 4.5, cy - 0.9), "+2,800", 0.8)), "Отметка низа потолка"))
+    if any(z.get("kind") == "beam" for z in zones):
+        items.append((_lg_fill((240, 240, 240), (70, 70, 75), "ANSI31", (150, 150, 155)), "Б - балка каркаса (низ - отметка)"))
+    if any(z.get("kind") == "rail" for z in zones):
+        items.append((_lg_line(BRONZE, 50, True), "Карниз потолочный для штор"))
     if any(f["kind"] == "led" for f in P.lighting):
         items.append((_lg_led, "Светодиодная лента"))
     col.legend(items)
     rows = []
     tot = 0.0
     for t in types:
-        if t["id"] == types[0]["id"]:
-            a = t1.area / 1e6
-        else:
-            a = sum(Polygon(z["poly"]).area for z in zones if z["type"] == t["id"] and z.get("kind") != "cove") / 1e6
+        a = by_type.get(t["id"], Polygon()).area / 1e6
+        a += sum(Polygon(z["poly"]).area for z in zones if z["type"] == t["id"] and z.get("kind") not in OVER) / 1e6
         a = round(a, 2)
         tot += a
         lv = t.get("level_text") or ("%+.3f" % (t.get("level", P.ceiling) / 1000.0)).replace(".", ",")
         rows.append([t["id"], t.get("desc", ""), lv, fmt_area(a) if a > 0 else t.get("qty", "-")])
     col.table([9, 60, 20, 20], ["Тип", "Конструкция и отделка", "Отметка", "Площадь, м²"], rows, title="Ведомость потолков",
               h=1.55, aligns=["C", "L", "C", "C"], total=["", "Итого", "", fmt_area(tot)])
+    open_ceiling = any("открыт" in t.get("short", "") for t in types)
     col.notes(A.note_lines("ceilings", [
         "Высота от чистого пола до плиты - %d мм." % P.slab,
+        "Открытый потолок: плита, балки, воздуховоды и лотки окрашиваются в один цвет; крепления подвесов шинопроводов, "
+        "светильников и карнизов - анкерами в плиту до окраски." if open_ceiling else
         "Закладные под подвесные светильники и треки - до монтажа ГКЛ.",
         "В санузлах - ГКЛВ; ревизионные люки к узлам вентиляции - по месту.",
     ]))
@@ -1182,10 +1225,11 @@ def sockets(A, no, title, scale):
                           P.panel.get("name", "ЩК"), "Щит %s" % P.panel.get("name", ""))))
     col.legend(items, rh=5.2)
     if P.circuits:
-        col.table([9, 27, 27, 46], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits, title="Групповые линии (рекомендуемая схема ЩК)",
-                  h=1.5, aligns=["C", "L", "L", "L"], head_h=5.0)
+        pn = (P.panel or {}).get("name", "ЩК")
+        col.table([9, 27, 27, 46], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits,
+                  title="Групповые линии (рекомендуемая схема %s)" % pn, h=1.5, aligns=["C", "L", "L", "L"], head_h=5.0)
     col.notes(A.note_lines("sockets", [
-        "Схема ЩК - рекомендуемая; окончательно - по электропроекту с учётом выделенной мощности.",
+        "Схема %s - рекомендуемая; окончательно - по электропроекту с учётом выделенной мощности." % (P.panel or {}).get("name", "ЩК"),
         "Прокладка - в гофре, по стенам строго вертикально / горизонтально; в санузлах - вне зон 0-1.",
     ]))
 
@@ -1258,8 +1302,8 @@ def plumbing(A, no, title, scale):
     ], rh=5.6)
     rows = []
     for fx in fixtures:
-        hx = sorted(set(o["h"] for o in fx["items"] if o["kind"] == "ХВС"))
-        hg = sorted(set(o["h"] for o in fx["items"] if o["kind"] == "ГВС"))
+        hx = sorted(set(o["h"] if o["h"] else "в полу" for o in fx["items"] if o["kind"] == "ХВС"), key=str)
+        hg = sorted(set(o["h"] if o["h"] else "в полу" for o in fx["items"] if o["kind"] == "ГВС"), key=str)
         kk = ["%s, h %d" % (o["kind"].replace("К", "Ø"), o["h"]) if o.get("h", 0) > 0 else "%s, в полу" % o["kind"].replace("К", "Ø")
               for o in fx["items"] if o["kind"].startswith("К")]
         rows.append([str(fx["num"]), fx["name"], fx["room"], "/".join(map(str, hx)) or "-", "/".join(map(str, hg)) or "-",

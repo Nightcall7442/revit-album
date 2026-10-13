@@ -263,9 +263,13 @@ def close_gaps(polys, max_gap=2600, min_t=60, max_t=700, min_w=450):
         return []
     mass = unary_union(polys)
     out = []
+    edges = []
     for poly in (mass.geoms if hasattr(mass, "geoms") else [mass]):
-        cs = list(poly.exterior.coords)
-        for (ax, ay), (bx, by) in zip(cs[:-1], cs[1:]):
+        for ring in [poly.exterior] + list(poly.interiors):   # a closed building: the gaps are on the inner rings
+            cs = list(ring.coords)
+            edges += list(zip(cs[:-1], cs[1:]))
+    if True:
+        for (ax, ay), (bx, by) in edges:
             L = abs(ax - bx) + abs(ay - by)
             if not (min_t <= L <= max_t) or (abs(ax - bx) > 1 and abs(ay - by) > 1):
                 continue

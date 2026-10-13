@@ -135,7 +135,7 @@ def draw_elevation(sp, P, e, k=25, occ=None):
         S.poly(sp, pts, "SD_Тонкие", True, (60, 60, 66), 25)
         hs_extra = e.setdefault("_box_heights", [])
         hs_extra.append(float(z["bottom"]))
-        place_text(sp, occ, ("короб %+.3f" % (z["bottom"] / 1000.0)).replace(".", ","),
+        place_text(sp, occ, ("%s %+.3f" % ("балка" if z.get("kind") == "beam" else "короб", z["bottom"] / 1000.0)).replace(".", ","),
                    [((s0 + s1) / 2, (z["bottom"] + H) / 2), ((s0 + s1) / 2, z["bottom"] - 2.5 * k)], 1.6 * k,
                    rgb=(60, 60, 70), mask=True)
     # ceiling & cut lines
@@ -242,6 +242,21 @@ def groups(P):
     return out
 
 
+def group_room(P, g):
+    """Elevations of several adjacent wet rooms (a WC lobby and its cubicles) drawn as one group: a pseudo-room with
+    their union for the plan, the materials table and the waterproofing."""
+    names = []
+    for e in g["elevs"]:
+        if e.get("room") in P.room_by_name and e["room"] not in names:
+            names.append(e["room"])
+    if not names:
+        return None
+    rs = [P.room_by_name[n] for n in names]
+    shp = unary_union([r["shp"] for r in rs])
+    return dict(name=g["name"], shp=shp, cls=rs[0].get("cls"), members=names, area=round(sum(r["area"] for r in rs), 2),
+                area_exact=sum(r["area_exact"] for r in rs), perimeter=sum(r["perimeter"] for r in rs))
+
+
 def elev_window(E, e, k):
     left = sc25(k, 520) if e.get("heights") else sc25(k, 250)
     bottom = sc25(k, 1300) if e.get("module_chain") else sc25(k, 950)
@@ -252,7 +267,7 @@ def elevation_sheets(A):
     P = A.P
     out = []
     for g in groups(P):
-        room = P.room_by_name.get(g["name"])
+        room = P.room_by_name.get(g["name"]) or group_room(P, g)
         with_plan = room is not None and g.get("plan", True) and room.get("cls") == "wet"
         k = 25
         widths = []
@@ -270,6 +285,7 @@ def elevation_sheets(A):
             used += w + 6
         if cur:
             pages.append(cur)
+        n_pages = len(pages)
         for i, pg in enumerate(pages):
             labels = ", ".join(e.get("label", "") for e in pg)
             if with_plan and i == 0:
@@ -280,6 +296,8 @@ def elevation_sheets(A):
                 title = "%s. Развёртка %s" % (g["name"], labels)
             out.append((title, "1:25", elevation_sheet, dict(group=g, elevs=pg, plan=with_plan and i == 0,
                                                              last=(i == len(pages) - 1), room=room)))
+        if with_plan and g.get("iso", True):           # wet rooms: axonometric views with the tile layout
+            out.append(("%s. Аксонометрия" % g["name"], "б/м", iso_sheet, dict(group=g, room=room)))
     if P.nodes:
         out.append(("Узлы", "по видам", nodes_sheet, dict()))
     return out
@@ -343,8 +361,9 @@ def waterproofing(P, room):
     """Floor + 200 mm up the walls + shower / bath zone up to 2000 mm on the walls the tray stands against."""
     a = room["area_exact"] + room["perimeter"] * 0.2
     b = room["shp"].boundary
+    members = room.get("members") or [room["name"]]
     for f in P.furniture:
-        if f.get("room") != room["name"] or f.get("kind") not in ("shower", "bath"):
+        if f.get("room") not in members or f.get("kind") not in ("shower", "bath"):
             continue
         x0, y0, x1, y1 = Polygon(f["poly"]).bounds
         for (pa, pb) in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
@@ -364,7 +383,7 @@ def _group_tables(A, col, arg, compact=False):
     if tile_area > 0:
         rows.append(["Керамогранит / плитка стен", fmt_area(tile_area), fmt_area(tile_area * 1.1)])
     if room is not None:
-        fl = P.floor_of_room(room["name"])
+        fl = P.floor_of_room((room.get("members") or [room["name"]])[0])
         if fl and fl.get("pattern") == "tile":
             rows.append(["Плитка пола %s" % "×".join(map(str, fl.get("tile", [600, 600]))), fmt_area(room["area"]),
                          fmt_area(room["area"] * 1.1)])
@@ -415,9 +434,10 @@ def bath_plan(A, psp, no, room):
             S.grid_lines(blk, part, *f.get("tile", [600, 600]), origin=org, rgb=Y.TILE_J)
         else:
             S.fill(blk, part, Y.PARQUET, "SD_Штриховка")
-    Y.furniture_all(blk, P, k, rooms=[room["name"]])
+    members = room.get("members") or [room["name"]]
+    Y.furniture_all(blk, P, k, rooms=members)
     for f in P.furniture:
-        if f.get("room") == room["name"] and f.get("kind") != "rug":
+        if f.get("room") in members and f.get("kind") != "rug":
             occ.add(Polygon(f["poly"]).buffer(0), "furn")
     Y.draw_walls(blk, P, k, show_boxes=True)
     Y.draw_openings(blk, P, k)
@@ -431,23 +451,31 @@ def bath_plan(A, psp, no, room):
     for so in P.sockets:
         if shp.buffer(80).contains(Point(so["x"], so["y"])):
             occ.add(Y.socket_icon(blk, so, k), "sym")
-    # wall markers
+    # wall markers (one viewpoint circle per room of the group)
     elevs = [e for e in P.elevations if (e.get("group") or e.get("room")) == room["name"]]
     from shapely.ops import polylabel
-    free = shp.buffer(-150)
-    for f in P.furniture:
-        if f.get("room") == room["name"]:
-            free = free.difference(Polygon(f["poly"]).buffer(80))
-    if free.is_empty:
-        free = shp.buffer(-150)
-    fp = free if free.geom_type == "Polygon" else max(free.geoms, key=lambda g: g.area)
-    c = polylabel(fp, 5)
-    cx, cy = c.x, c.y
-    r = 2.2 * k
-    S.fill(blk, Point(cx, cy).buffer(r, 32), (255, 255, 255), "SD_Текст")
-    S.circle(blk, (cx, cy), r, "SD_Тонкие", (30, 30, 30), 25)
-    occ.add(Point(cx, cy).buffer(r + 3 * k), "sym")
+    r = 2.2 * k if len(members) == 1 else 1.6 * k
+    centres = {}
+    for mn in members:
+        mshp = P.room_by_name[mn]["shp"] if mn in P.room_by_name else shp
+        free = mshp.buffer(-150)
+        for f in P.furniture:
+            if f.get("room") == mn:
+                free = free.difference(Polygon(f["poly"]).buffer(80))
+        if free.is_empty:
+            free = mshp.buffer(-150)
+        if free.is_empty:
+            free = mshp
+        fp = free if free.geom_type == "Polygon" else max(free.geoms, key=lambda g: g.area)
+        c = polylabel(fp, 5)
+        centres[mn] = (c.x, c.y)
+        if not any((e.get("room") or room["name"]) == mn for e in elevs) and len(members) > 1:
+            continue
+        S.fill(blk, Point(c.x, c.y).buffer(r, 32), (255, 255, 255), "SD_Текст")
+        S.circle(blk, (c.x, c.y), r, "SD_Тонкие", (30, 30, 30), 25)
+        occ.add(Point(c.x, c.y).buffer(r + 3 * k), "sym")
     for e in elevs:
+        cx, cy = centres.get(e.get("room"), next(iter(centres.values())))
         E = Elev(P, e)
         # facing direction = normal from the room towards the wall
         n = (E.ux[1], -E.ux[0])          # right-hand normal of a->b (wall seen from inside, left->right)
@@ -465,7 +493,7 @@ def bath_plan(A, psp, no, room):
     # bindings: fixtures and outlets along each wall
     pts = [("pt", (o["x"], o["y"])) for o in P.plumbing if o.get("h", 0) > 0 and shp.buffer(80).contains(Point(o["x"], o["y"]))]
     for f in P.furniture:
-        if f.get("room") != room["name"] or f.get("kind") in ("rug", "rail", "mirror"):
+        if f.get("room") not in members or f.get("kind") in ("rug", "rail", "mirror"):
             continue
         pts.append(("box", Polygon(f["poly"]).buffer(0).bounds))
     _edge_chains_outside(blk, P, room, pts, k, occ)
@@ -699,9 +727,66 @@ def nodes_sheet(A, no, title, scale, arg):
 
 
 # ------------------------------------------------------------------ openings schedule
+def _sash_symbol(sp, x0, z0, x1, z1, kind, hinge="L", k=40):
+    """ГОСТ 23166 opening scheme seen from inside: the apex points to the handle; solid - turn, dashed - tilt."""
+    g = (110, 110, 110)
+    if kind in ("turn", "tilt-turn"):
+        hx, ax = (x0, x1) if hinge == "L" else (x1, x0)
+        S.line(sp, (hx, z0), (ax, (z0 + z1) / 2.0), "SD_Окна", g, 13)
+        S.line(sp, (hx, z1), (ax, (z0 + z1) / 2.0), "SD_Окна", g, 13)
+    if kind in ("tilt", "tilt-turn"):
+        Y.dashed(sp, (x0, z0), ((x0 + x1) / 2.0, z1), 0.8 * k, 0.5 * k, g, 9)
+        Y.dashed(sp, (x1, z0), ((x0 + x1) / 2.0, z1), 0.8 * k, 0.5 * k, g, 9)
+
+
+def draw_window_divided(sp, spec, k=40, dims=True):
+    """A window / shop front with its modules, transom, sashes and opening schemes (view from inside)."""
+    W = spec["w"]
+    H = spec.get("h", 1500)
+    H0 = spec.get("sill", 900)
+    H1 = H0 + H
+    fw = spec.get("frame_w", 60)
+    mods = spec.get("division") or [W]
+    tr = spec.get("transom")
+    tr = tr if tr and H0 + 200 < tr < H1 - 200 else None
+    xs = [0]
+    for m in mods:
+        xs.append(xs[-1] + m)
+    xs[-1] = W
+    S.fill(sp, [(0, H0), (W, H0), (W, H1), (0, H1)], (70, 70, 74) if spec.get("system") == "storefront" else (236, 236, 236),
+           "SD_Окна")
+    sash = spec.get("sash") or ["fixed"] * len(mods)
+    for i, (a, b) in enumerate(zip(xs[:-1], xs[1:])):
+        tiers = [(H0, tr), (tr, H1)] if tr else [(H0, H1)]
+        for j, (z0, z1) in enumerate(tiers):
+            gx0, gz0, gx1, gz1 = a + fw / (1 if i == 0 else 2), z0 + fw / (1 if j == 0 else 2), \
+                b - fw / (1 if i == len(mods) - 1 else 2), z1 - fw / (1 if j == len(tiers) - 1 else 2)
+            S.fill(sp, [(gx0, gz0), (gx1, gz0), (gx1, gz1), (gx0, gz1)], (225, 236, 245), "SD_Окна")
+            S.rect(sp, gx0, gz0, gx1, gz1, "SD_Окна", (60, 60, 64), 13)
+            kind = sash[i] if (j == 0 or not tr) else "fixed"
+            if kind != "fixed":
+                inset = 25
+                S.rect(sp, gx0 - inset, gz0 - inset, gx1 + inset, gz1 + inset, "SD_Окна", (40, 40, 44), 18)
+                hinge = "L" if i < len(mods) / 2.0 else "R"
+                _sash_symbol(sp, gx0, gz0, gx1, gz1, kind, hinge, k)
+    S.rect(sp, 0, H0, W, H1, "SD_Окна", (20, 20, 20), 35)
+    if H0 > 0:
+        S.fill(sp, [(-40, H0 - 40), (W + 40, H0 - 40), (W + 40, H0), (-40, H0)], (200, 200, 200), "SD_Окна")
+    if dims:
+        if len(mods) > 1:
+            DM.chain(sp, xs, -350, 0, k)
+            DM.chain(sp, [0, W], -650, 0, k)
+        else:
+            DM.chain(sp, [0, W], -350, 0, k)
+        DM.chain(sp, sorted(set([0, H0, H1] + ([tr] if tr else []))), W + 330, W, k, vertical=True)
+    return W
+
+
 def draw_opening_elev(sp, o_type, spec, k=40):
     W = spec["w"]
     H = spec.get("h", 2100)
+    if spec.get("kind") == "window" and spec.get("division"):
+        return draw_window_divided(sp, spec, k)
     if spec.get("kind") == "window":
         H0 = spec.get("sill", 900)
         H1 = H0 + H
@@ -750,30 +835,13 @@ def draw_opening_elev(sp, o_type, spec, k=40):
     return W
 
 
-def openings_k(P):
-    """1:40 when all schemes fit in one row of the sheet, else 1:50."""
-    ws = []
-    for o in P.openings:
-        if o["kind"] != "passage" and o.get("mark"):
-            key = (o["mark"], P.door_hand(o))
-            if key not in [k_ for k_, _ in ws]:
-                ws.append((key, o["w"]))
-    for k in (40, 50, 60):
-        if sum((w + 1000) / float(k) for _, w in ws) + 4 * max(0, len(ws) - 1) <= 388:
-            return k
-    return 75
-
-
-def openings_schedule(A, no, title, scale):
-    P = A.P
-    psp = A.make_sheet(no, title, scale, "Схемы заполнения проёмов %s (двери - вид со стороны открывания). Спецификация" % scale)
+def _opening_specs(P):
     marks = []
     for o in P.openings:
         if o["kind"] == "passage":
             continue
         if o.get("mark") and o["mark"] not in marks:
             marks.append(o["mark"])
-    k = openings_k(P)
     specs = []
     HAND = {"L": "лев.", "R": "прав."}
     for m in marks:
@@ -792,23 +860,69 @@ def openings_schedule(A, no, title, scale):
                         block_w=t.get("block_w"), hand=hand,
                         style=t.get("style", "glass" if o["kind"] == "balcony" else ("steel" if o.get("steel") else "door")),
                         block_h=t.get("block_h", o["h"] - 100))
+            for key_ in ("division", "transom", "sash", "frame_w", "system"):
+                if t.get(key_) is not None:
+                    spec[key_] = t[key_]
             label = m if hand is None else "%s %s" % (m, HAND[hand])
             spec["mark"] = m
-            spec["rooms"] = sorted(set(o_.get("room", "") for o_ in os_ if o_.get("room")))
+            from . import topo as T_
+            rooms = set(o_.get("room", "") for o_ in os_ if o_.get("room"))
+            for o_ in os_:
+                rooms.update(r["name"] for r, n, fp in T_.opening_sides(P, o_) if r is not None)
+            spec["rooms"] = sorted(rooms)
             specs.append((label, spec, len(os_)))
-    def title_w(label, cnt):
-        return S.tw(label, 4.2, True) + 3.0 + S.tw("%d шт." % cnt, 2.6) + 9.0
-    slots = [max((sp_["w"] + 1000) / k, title_w(lb, cnt)) for lb, sp_, cnt in specs]   # a title never leaves its slot
-    gap = max(2.0, (388 - sum(slots)) / max(1, len(specs) - 1))
-    x = 24.0
+    return specs
+
+
+def _title_w(label, cnt):
+    return S.tw(label, 4.2, True) + 3.0 + S.tw("%d шт." % cnt, 2.6) + 9.0
+
+
+def openings_layout(P):
+    """(rows, k): one row of schemes at the largest scale that fits, else two rows (a cafe: two shop fronts and
+    five door types do not fit in 388 mm)."""
+    specs = _opening_specs(P)
     top_all = max([2650] + [sp_["h"] + (sp_["sill"] if sp_["kind"] == "window" else 0) + 350 for _, sp_, _ in specs])
-    for i, (m, spec, cnt) in enumerate(specs):
-        blk, off = A.model_block(no, i)
-        W = draw_opening_elev(blk, m, spec, k)
-        S.line(blk, (-250, 0), (W + 250, 0), "SD_Стены", (20, 20, 20), 50)
-        r = A.vp(psp, off, (-300, -900, W + 700, top_all), (x, 140), k)     # one top -> titles on one line
-        A.title_note(psp, r[0] + 7, r[3] + 3, m, "%d шт." % cnt, h=4.2, hn=2.6)
-        x = x + slots[i] + gap
+    for rn, kk in ((1, 40), (1, 50), (1, 60), (1, 75), (2, 50), (2, 60), (2, 75), (2, 100), (2, 125)):
+        per = [max((sp_["w"] + 1200) / kk, _title_w(lb, cnt)) for lb, sp_, cnt in specs]
+        if rn == 1:
+            ok = sum(per) + 4 * (len(per) - 1) <= 388
+        else:
+            half = int(math.ceil(len(per) / 2.0))
+            ok = max(sum(per[:half]), sum(per[half:])) + 4 * (half - 1) <= 388 and 2 * (top_all + 1250) / kk <= 108
+        if ok:
+            return rn, kk
+    return 2, 150
+
+
+def openings_k(P):
+    return openings_layout(P)[1]
+
+
+def openings_schedule(A, no, title, scale):
+    P = A.P
+    psp = A.make_sheet(no, title, scale, "Схемы заполнения проёмов (двери - вид со стороны открывания). Спецификация")
+    specs = _opening_specs(P)
+    rows_n, k = openings_layout(P)
+    top_all = max([2650] + [sp_["h"] + (sp_["sill"] if sp_["kind"] == "window" else 0) + 350 for _, sp_, _ in specs])
+    slots = [max((sp_["w"] + 1200) / k, _title_w(lb, cnt)) for lb, sp_, cnt in specs]   # a title never leaves its slot
+    half = len(specs) if rows_n == 1 else int(math.ceil(len(specs) / 2.0))
+    lines_ = [list(range(0, half)), list(range(half, len(specs)))] if rows_n == 2 else [list(range(len(specs)))]
+    row_h = (top_all + 1250) / k
+    for li, idx in enumerate(lines_):
+        if not idx:
+            continue
+        gap = max(2.0, (388 - sum(slots[i] for i in idx)) / max(1, len(idx) - 1))
+        x = 24.0
+        y0 = 140.0 if rows_n == 1 else 140.0 + (1 - li) * (row_h + 6)
+        for i in idx:
+            m, spec, cnt = specs[i]
+            blk, off = A.model_block(no, i)
+            W = draw_opening_elev(blk, m, spec, k)
+            S.line(blk, (-250, 0), (W + 250, 0), "SD_Стены", (20, 20, 20), 50)
+            r = A.vp(psp, off, (-500, -900, W + 700, top_all), (x, y0), k)     # narrow frame dims sit outside
+            A.title_note(psp, r[0] + 7, r[3] + 3, m, "%d шт." % cnt, h=4.2, hn=2.6)
+            x = x + slots[i] + gap
     rows = []
     for m, spec, cnt in specs:
         t = P.opening_types.get(spec["mark"], {})
@@ -822,3 +936,164 @@ def openings_schedule(A, no, title, scale):
         "окна - изнутри помещения.",
         "Штриховка в проёме - заделка между блоком и проёмом (выполняет монтажник дверей).",
     ]), 150)
+
+
+# ------------------------------------------------------------------ windows and shop fronts (types, glazing, node)
+SASH_RU = {"fixed": "глухая", "tilt": "откидная", "turn": "поворотная", "tilt-turn": "поворотно-откидная"}
+
+
+def window_types(P):
+    """Window types with a construction described (division / glazing) -> [(mark, type, openings)]."""
+    out = []
+    for m, t in P.opening_types.items():
+        if not t.get("division"):
+            continue
+        os_ = [o for o in P.openings if o.get("mark") == m and o["kind"] == "window"]
+        if os_:
+            out.append((m, t, os_))
+    return out
+
+
+def windows_k(P):
+    """Scale of the window elevations: all in one row left of the node (270 mm) and under the title (100 mm high)."""
+    wt = window_types(P)
+    top = max([2650] + [os_[0]["h"] + os_[0].get("sill", 0) + 350 for m, t, os_ in wt])
+    for k in (25, 40, 50, 60, 75, 100):
+        if sum((os_[0]["w"] + 1100) / float(k) for m, t, os_ in wt) + 8 * max(0, len(wt) - 1) <= 270 and (top + 900) / k <= 98:
+            return k
+    return 125
+
+
+def node_window_jamb(sp, k, storefront=False):
+    """Horizontal section through the jamb of a window block in a wall opening (ГОСТ 30971): wall, frame, the three
+    layers of the installation joint, glazing unit, anchor, inner reveal. Model units = mm. -> [(label point, text)]"""
+    t_wall, x_in = 300.0, 300.0
+    hatch_concrete(sp, [(0, -330), (t_wall, -330), (t_wall, 0), (0, 0)], k)          # wall pier, jamb face at y = 0
+    S.fill(sp, [(-20, -330), (0, -330), (0, 40), (-20, 40)], (215, 205, 190), "SD_Штриховка")   # facade render
+    S.poly(sp, [(-20, -330), (-20, 40)], "SD_Тонкие", False, (90, 90, 90), 18)
+    fx0, fx1 = (95.0, 185.0) if storefront else (110.0, 180.0)          # frame depth 90 (alu) / 70 (PVC)
+    fy0, fy1 = 20.0, 20.0 + (60.0 if storefront else 70.0)
+    S.fill(sp, [(fx0, fy0), (fx1, fy0), (fx1, fy1), (fx0, fy1)], (70, 70, 74) if storefront else (245, 245, 245), "SD_Окна")
+    S.rect(sp, fx0, fy0, fx1, fy1, "SD_Окна", (20, 20, 20), 35)
+    for i in range(1, 4 if not storefront else 2):                      # PVC chambers
+        xx = fx0 + (fx1 - fx0) * i / (4 if not storefront else 2)
+        S.line(sp, (xx, fy0 + 6), (xx, fy1 - 6), "SD_Окна", (120, 120, 120) if not storefront else (200, 200, 200), 9)
+    # installation joint: foam (centre), vapour barrier (inside), diffusion / PSUL tape (outside)
+    S.fill(sp, [(fx0, 0), (fx1, 0), (fx1, fy0), (fx0, fy0)], (250, 228, 160), "SD_Штриховка")
+    S.hatch(sp, [(fx0, 0), (fx1, 0), (fx1, fy0), (fx0, fy0)], (200, 160, 60), "ANSI37", scale=0.05 * k)
+    S.line(sp, (fx1 + 2, -60), (fx1 + 2, fy0 + 25), "SD_Окна", (25, 95, 210), 70)          # inner vapour barrier tape
+    Y.dashed(sp, (fx0 - 2, -40), (fx0 - 2, fy0 + 15), 0.5 * k, 0.3 * k, (214, 120, 40), 70)   # outer PSUL / diffusion
+    # anchor plate into the wall
+    S.line(sp, ((fx0 + fx1) / 2, fy0), ((fx0 + fx1) / 2, -110), "SD_Окна", (60, 60, 60), 35)
+    S.line(sp, ((fx0 + fx1) / 2 - 15, -110), ((fx0 + fx1) / 2 + 15, -110), "SD_Окна", (60, 60, 60), 35)
+    # glazing unit
+    gx = (fx0 + fx1) / 2.0
+    gt = 40.0 if storefront else 32.0
+    for xx in (gx - gt / 2, gx + gt / 2):
+        S.line(sp, (xx, fy0 + 15), (xx, 330), "SD_Окна", (60, 110, 160), 25)
+    S.fill(sp, [(gx - gt / 2 + 6, fy0 + 15), (gx + gt / 2 - 6, fy0 + 15), (gx + gt / 2 - 6, fy0 + 30), (gx - gt / 2 + 6, fy0 + 30)],
+           (120, 120, 125), "SD_Окна")
+    # inner reveal (plaster / slope panel) and sill direction
+    S.fill(sp, [(fx1 + 4, 0), (x_in, 0), (x_in, 12), (fx1 + 4, 12)], (250, 250, 250), "SD_Штриховка")
+    S.rect(sp, fx1 + 4, 0, x_in, 12, "SD_Тонкие", (60, 60, 60), 18)
+    S.text(sp, "снаружи", (-20, 320), 2.0 * k, "MIDDLE_LEFT", rgb=(120, 120, 120))
+    S.text(sp, "внутри", (x_in, 320), 2.0 * k, "MIDDLE_RIGHT", rgb=(120, 120, 120))
+    return [((gx, 250.0), "1"), ((fx0 + 20, fy0 + 30), "2"), (((fx0 + fx1) / 2, 10.0), "3"), ((fx1 + 2, -40.0), "4"),
+            ((fx0 - 2, -30.0), "5"), (((fx0 + fx1) / 2, -100.0), "6"), (((fx1 + x_in) / 2, 6.0), "7")]
+
+
+def windows_sheet(A, no, title, scale):
+    P = A.P
+    k = windows_k(P)
+    psp = A.make_sheet(no, title, scale, "Конструкции окон и витражей (вид изнутри), заполнение, открывание. Узел примыкания")
+    wt = window_types(P)
+    x = 24.0
+    top = max([2650] + [os_[0]["h"] + os_[0].get("sill", 0) + 350 for m, t, os_ in wt])
+    for i, (m, t, os_) in enumerate(wt):
+        o = os_[0]
+        spec = dict(kind="window", w=o["w"], h=o["h"], sill=o.get("sill", 0), division=t.get("division"),
+                    transom=t.get("transom"), sash=t.get("sash"), frame_w=t.get("frame_w", 60), system=t.get("system"))
+        blk, off = A.model_block(no, i)
+        W = draw_window_divided(blk, spec, k)
+        S.line(blk, (-250, 0), (W + 250, 0), "SD_Стены", (20, 20, 20), 50)
+        r = A.vp(psp, off, (-300, -900, W + 800, top), (x, 150.0), k)
+        A.title_note(psp, r[0] + 7, r[3] + 3, m, "%d шт., 1:%d" % (len(os_), k), h=4.2, hn=2.6)
+        x = r[2] + 8
+    # node 1:10 on the right, legend under it
+    kn = 10
+    blk, off = A.model_block(no, 50)
+    sf = any(t.get("system") == "storefront" for m, t, os_ in wt)
+    marks = node_window_jamb(blk, kn, storefront=sf)
+    lab_at = {"1": (420, 250), "2": (-10, 150), "3": (40, 80), "4": (300, -60), "5": (-10, -60), "6": (60, -200),
+              "7": (380, 80)}
+    for p, lab in marks:
+        q = lab_at.get(lab, (p[0] + 100, p[1] + 60))
+        S.line(blk, p, q, "SD_Тонкие", (90, 90, 90), 9)
+        Y.mark_circle(blk, lab, q, kn, r=1.5, h=1.7)
+    r = A.vp(psp, off, (-60, -260, 470, 345), (306.0, 150.0), kn)
+    A.title_note(psp, r[0], r[3] + 3, "Узел 1", "разрез по откосу, 1:10", h=3.4, hn=2.2)
+    legend = ["1 - стеклопакет (см. таблицу)", "2 - профиль рамы %s" % ("алюминиевый с терморазрывом" if sf else "ПВХ 70 мм"),
+              "3 - монтажная пена (центральный теплоизоляционный слой)", "4 - пароизоляционная лента (внутренний слой)",
+              "5 - ПСУЛ / диффузионная лента (наружный слой)", "6 - анкерная пластина / дюбель, шаг ≤ 700 мм",
+              "7 - откос: штукатурка / панель, примыкание на герметике"]
+    yy = r[1] - 4
+    for ln in legend:
+        S.text(psp, ln, (306.0, yy), 1.9, "MIDDLE_LEFT", rgb=(60, 60, 60))
+        yy -= 3.3
+    rows = []
+    for m, t, os_ in wt:
+        o = os_[0]
+        area = sum(x_["w"] * x_["h"] for x_ in os_) / 1e6
+        sash = ", ".join("%s×%d" % (SASH_RU.get(sv, sv), (t.get("sash") or []).count(sv)) if (t.get("sash") or []).count(sv) > 1
+                         else SASH_RU.get(sv, sv) for sv in dict.fromkeys(t.get("sash") or []))
+        rows.append([m, "%d×%d" % (o["w"], o["h"]), str(len(os_)), fmt_area(area), t.get("profile", ""), t.get("glazing", ""),
+                     sash + (", ригель +%s" % ("%.3f" % (t["transom"] / 1000.0)).replace(".", ",") if t.get("transom") else ""),
+                     t.get("sill_note", "")])
+    yb = S.table(psp, 24, 104, [14, 22, 9, 16, 62, 62, 40, 50],
+                 ["Марка", "Размер, мм", "Кол.", "Площадь, м²", "Профиль", "Заполнение", "Открывание", "Низ / подоконник"],
+                 rows, h=1.6, aligns=["C", "C", "C", "C", "L", "L", "L", "L"], title="Спецификация окон и витражей", head_h=6.0)
+    S.notes(psp, 24, min(yb - 8, 60), A.note_lines("windows", [
+        "Монтаж - по ГОСТ 30971-2012: шов из трёх слоёв (наружный паропроницаемый, центральный теплоизоляционный, "
+        "внутренний пароизоляционный); зазор 15-25 мм по периметру; крепёж - анкерные пластины / дюбели с шагом ≤ 700 мм.",
+        "Нижний ярус витражей и остекление дверей - безопасное стекло (закалённое / многослойное триплекс).",
+        "Открывание показано изнутри помещения: вершина треугольника - сторона ручки; сплошные линии - поворотное, "
+        "штриховые - откидное.",
+        "Размеры - по проёмам в чистоте; изготовление - после контрольного замера. Цвет профиля и фурнитура - по дизайну.",
+    ]), 250)
+
+
+def iso_sheet(A, no, title, scale, arg):
+    """Two axonometric views of a wet room / WC block (from the two opposite corners): tile layout on the walls,
+    fixtures, openings - what the tiler and the client look at first."""
+    import os
+    from . import iso3d
+    P = A.P
+    room = arg["room"]
+    names = room.get("members") or [room["name"]]
+    psp = A.make_sheet(no, title, scale, "Аксонометрические виды: раскладка плитки, сантехника, проёмы (стены перед зрителем срезаны)")
+    views = list(zip(iso3d.views_for(P, names), ("Вид 1", "Вид 2")))
+    x = 24.0
+    for i, (az, lab) in enumerate(views):
+        png = os.path.join(A.out_dir, "iso_%d_%d.png" % (no, i))
+        try:
+            ok = iso3d.render_rooms(P, names, png, azim=az)
+        except Exception as ex:
+            A.issues.append(dict(code="ISO_FAILED", level="warning", sheet=A.cur_title, msg=str(ex)))
+            ok = None
+        if not ok:
+            continue
+        from PIL import Image
+        iw, ih = Image.open(png).size
+        ww, hh = 185.0, 185.0 * ih / iw
+        if hh > 175.0:
+            hh, ww = 175.0, 175.0 * iw / ih
+        img = A.image("iso_%d_%d.png" % (no, i), png)
+        y0 = 68.0 + (175.0 - hh) / 2.0
+        psp.add_image(img, insert=(x + (185.0 - ww) / 2.0, y0), size_in_units=(ww, hh),
+                      dxfattribs={"layer": "SD_Рамка"}).rgb = (254, 254, 254)
+        A.title_note(psp, x, 250.0, lab, "без масштаба", h=3.6, hn=2.4)
+        x += 200.0
+    S.notes(psp, 24, 58, A.note_lines("iso", [
+        "Раскладка плитки - по развёрткам; швы стен совпадают со швами пола; подрезка - в углах у входа.",
+        "Виды условные: сантехника и мебель показаны габаритами; стены перед зрителем срезаны на +0,300.",
+    ]), 170)

@@ -105,9 +105,9 @@ def test_opening_scheme_note_follows_gost(tmp_path):
     A, no, _ = _sheet(STUDIO, "openings", tmp_path)
     psp = A.layouts[no]
     txt = " ".join(e.dxf.text for e in psp if e.dxftype() == "TEXT") + " ".join(
-        e.text for e in psp if e.dxftype() == "MTEXT")
-    assert "основание треугольника - сторона петель" in txt
-    assert "вершина треугольника - со стороны петель" not in txt
+        e.text.replace("\\P", " ") for e in psp if e.dxftype() == "MTEXT")
+    assert "основание треугольника — сторона петель" in txt      # typographic dash (sdalbum/typo.py)
+    assert "вершина треугольника — со стороны петель" not in txt
 
 
 def test_cover_logo_visible(tmp_path):
@@ -276,3 +276,19 @@ def test_ceiling_zone_chain_not_on_wall(tmp_path):
     A.build()
     rep = qa.check_doc(A.doc)
     assert not [i for v in rep.values() for i in v if i["code"] in ("LINE_THROUGH_TEXT", "TEXT_ON_WALL")], rep
+
+
+def test_typography_of_sheet_texts(tmp_path):
+    """Russian typography on the sheets (lesson L-081): dash, en-dash ranges, «ёлочки», м², no double spaces, a number
+    and its unit never split - the QA rule finds nothing on a built sheet."""
+    from sdalbum import qa, typo
+    A, no, _ = _sheet(STUDIO, "plumbing", tmp_path)
+    issues, _ = qa.check_layout(A.doc, A.layouts[no])
+    assert not [i for i in issues if i["code"].startswith("TYPO")]
+    f = typo.fix('Уклон 0,02-0,03 к стояку - по "проекту", 12 м2 ... ГОСТ 30674-99, 4-16-4')
+    assert f.replace(typo.NBSP, " ") == "Уклон 0,02–0,03 к стояку — по «проекту», 12 м² … ГОСТ 30674-99, 4-16-4"
+    assert not typo.issues(f)
+    assert {c for c, m in typo.issues('Уклон 0,02-0,03 - по "проекту" , 12 м2')} == {
+        "TYPO_DASH", "TYPO_QUOTES", "TYPO_SPACES", "TYPO_UNITS", "TYPO_RANGE"}
+    from sdalbum import gfx as S
+    assert "200 мм" in S.prewrap("Гидроизоляция с заведением на стены 200" + typo.NBSP + "мм", 52, 2.1).replace("\\P", "|")

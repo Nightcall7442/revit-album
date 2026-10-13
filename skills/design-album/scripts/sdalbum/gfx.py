@@ -40,12 +40,13 @@ def ensure_fonts():
 
 
 def tw(s, h, bold=False):
-    """Exact text width (same units as h) for the album fonts."""
+    """Exact text width (same units as h) for the album fonts - of the text as it will be drawn (typography fixed)."""
     from ezdxf.fonts import fonts
+    from . import typo
     key = (bold, round(h, 4))
     if key not in _FONT_CACHE:
         _FONT_CACHE[key] = fonts.make_font(FONT_B if bold else FONT, cap_height=h, width_factor=1.0)
-    return _FONT_CACHE[key].text_width(s)
+    return _FONT_CACHE[key].text_width(typo.fix(s).replace(typo.NBSP, " ") if isinstance(s, str) else s)
 
 C_WALL = (38, 38, 40)
 C_PART = (120, 120, 124)
@@ -107,6 +108,10 @@ def tc(e, rgb):
 
 
 def text(sp, s, p, h, align="MIDDLE_CENTER", layer="SD_Текст", rot=0.0, bold=False, rgb=None, width=None):
+    from . import typo
+    s = typo.fix(s)
+    if isinstance(s, str):
+        s = s.replace(typo.NBSP, " ")            # one line: nothing to break
     t = sp.add_text(s, height=h, rotation=rot, dxfattribs={"style": STB if bold else ST, "layer": layer})
     if width:
         t.dxf.width = width
@@ -114,7 +119,30 @@ def text(sp, s, p, h, align="MIDDLE_CENTER", layer="SD_Текст", rot=0.0, bol
     return tc(t, rgb)
 
 
+def prewrap(s, width, h, bold=False):
+    """Line breaks made here (greedy, glyph widths, non-breaking spaces respected) - the renderer breaks at a
+    non-breaking space and drops text after MTEXT's own \\~ code, so the lines are given explicitly."""
+    from . import typo
+    lines = []
+    for part in str(s).split("\\P"):
+        cur = ""
+        for w in part.split(" "):
+            t = (cur + " " + w) if cur else w
+            if tw(t, h, bold) > width * 0.97 and cur:
+                lines.append(cur)
+                cur = w
+            else:
+                cur = t
+        lines.append(cur)
+    return "\\P".join(l.replace(typo.NBSP, " ") for l in lines)
+
+
 def mtext(sp, s, p, h, width, layer="SD_Текст", attach="TOP_LEFT", spacing=1.25, bold=False, rgb=None):
+    from . import typo
+    s = typo.fix(s)
+    if width and isinstance(s, str):
+        s = prewrap(s, width, h, bold)
+        width = width * 1.03                     # the renderer must not break a line we made again
     m = sp.add_mtext(s, dxfattribs={"style": STB if bold else ST, "layer": layer, "char_height": h, "width": width})
     m.dxf.line_spacing_factor = spacing
     m.set_location(p, attachment_point=getattr(MTextEntityAlignment, attach))
@@ -318,7 +346,9 @@ def viewport(psp, cx_mm, cy_mm, w_mm, h_mm, model_center, scale):
 
 
 def wrap_count(s, width, h, bold=False):
-    """Number of lines MTEXT will use (greedy word wrap with real glyph widths)."""
+    """Number of lines MTEXT will use (greedy word wrap with real glyph widths) - the same breaks as prewrap."""
+    from . import typo
+    s = typo.fix(s) if isinstance(s, str) else s
     n = 0
     for part in str(s).split("\\P"):
         words = part.split(" ")
@@ -418,6 +448,13 @@ def legend(psp, x, y, items, title="Условные обозначения", w1
 
 
 def notes(psp, x, y, lines_, width=110.0, title="Примечания:"):
+    """Numbered notes, one MTEXT per item (a paragraph break that falls on the wrap edge was lost by the renderer:
+    «...разводки.5. Выводы» ran into one line)."""
     text(psp, title, (x, y), 2.5, "BOTTOM_LEFT", "SD_Текст", bold=True)
-    s = "\\P".join("%d. %s" % (i + 1, l) for i, l in enumerate(lines_))
-    return mtext(psp, s, (x, y - 2.0), 2.1, width, "SD_Текст", "TOP_LEFT", 1.3)
+    yy = y - 2.0
+    m = None
+    for i, l in enumerate(lines_):
+        s = "%d. %s" % (i + 1, l)
+        m = mtext(psp, s, (x, yy), 2.1, width, "SD_Текст", "TOP_LEFT", 1.3)
+        yy -= wrap_count(s, width, 2.1) * 2.1 * 1.667 * 1.3
+    return m

@@ -53,7 +53,7 @@ def test_bare_plan_becomes_valid_project(studio_data):
         assert d3[k], k
     assert d3["panel"] and d3["floors"] and d3["ceilings"]["types"] and d3["finishes"]["types"]
     assert all(o.get("proposed") for o in d3["lighting"] + d3["sockets"] + d3["switches"] + d3["plumbing"])
-    assert any("проектное предложение" in q for q in d3["meta"]["questions"])
+    assert any("проектное предложение" in q for q in d3["notes"]["general"]["add"])     # a statement, not a question
 
 
 def test_designer_data_is_never_overwritten(studio_data):

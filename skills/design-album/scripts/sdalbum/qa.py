@@ -228,6 +228,11 @@ def check_layout(doc, layout, framed=True):
                 issues.append(dict(code="TEXT_ON_WALL", level="error", where=_c(t["bbox"]),
                                    msg="«%s» лежит на тёмной заливке (стена)" % _s(t["content"]),
                                    bbox=[round(v, 2) for v in t["bbox"]]))
+    # --- Russian typography (dash, quotes, spaces, units, mixed scripts, ranges): sdalbum/typo.py
+    from . import typo
+    for t in texts:
+        for code, msg in typo.issues(t["content"]):
+            issues.append(dict(code=code, level="error", where=_c(t["bbox"]), msg="«%s»: %s" % (_s(t["content"]), msg)))
     if framed:
         st = box(*STAMP)
         fr = box(*FRAME)

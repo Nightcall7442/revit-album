@@ -19,8 +19,10 @@ DEFAULT_LETTER = [
     "Визуализации интерьера собраны в отдельном альбоме.",
     "Мы всегда будем ждать Вас в нашей студии за новыми проектами!",
 ]
-ZONE_RGB = {"living": (236, 224, 202), "kitchen": (220, 233, 214), "wet": (214, 228, 242), "circulation": (232, 232, 234)}
-ZONE_NAME = {"living": "жилые помещения", "kitchen": "кухня", "wet": "санузлы", "circulation": "прихожая, коридор"}
+ZONE_RGB = {"living": (236, 224, 202), "kitchen": (220, 233, 214), "wet": (214, 228, 242), "circulation": (232, 232, 234),
+            "public": (240, 226, 204), "bar": (226, 236, 210), "storage": (228, 226, 232)}
+ZONE_NAME = {"living": "жилые помещения", "kitchen": "кухня", "wet": "санузлы", "circulation": "прихожая, коридор",
+             "public": "зал для посетителей", "bar": "бар (зона персонала)", "storage": "служебные помещения"}
 
 
 def has_data(A, key):
@@ -155,6 +157,7 @@ def general(A, no, title, scale):
         "Скрытые работы - фотофиксация до закрытия. Изменения - только по согласованию со студией.",
     ])
     S.notes(psp, 24, yb - 9, notes, 176)
+    notes_bottom = yb - 9 - 2.0 - sum(S.wrap_count("%d. %s" % (i + 1, l), 176, 2.1) for i, l in enumerate(notes)) * 2.1 * 1.667 * 1.3
     rr, tot = [], 0.0
     for r in P.rooms:
         fl = P.floor_of_room(r["name"])
@@ -171,8 +174,16 @@ def general(A, no, title, scale):
         wq = 196.0
         n = sum(max(1, math.ceil(S.tw("%d. %s" % (i + 1, q), 2.1) / (wq - 2))) for i, q in enumerate(qs))
         hq = 4.0 + n * 2.1 * 1.3 * 1.25
-        S.notes(psp, 214, 38 + hq, qs, wq, title="Вопросы к заказчику (до начала работ):")
-        q_top = 38 + hq + 8
+        S.notes(psp, 214, 46 + hq, qs, wq, title="Вопросы к заказчику (до начала работ):")
+        q_top = 46 + hq + 8
+    else:                                    # a senior album: the decisions taken instead of open questions
+        dec = [x if len(x) <= 150 else x[:147].rsplit(" ", 1)[0] + "..." for x in P.meta.get("decisions", [])][:6]
+        if dec:
+            wq = 196.0
+            n = sum(S.wrap_count("%d. %s" % (i + 1, q), wq, 2.1) for i, q in enumerate(dec))
+            hq = 2.0 + n * 2.1 * 1.667 * 1.3
+            S.notes(psp, 214, 46 + hq, dec, wq, title="Принятые проектные решения:")
+            q_top = 46 + hq + 8
     try:
         from . import iso3d
         png = os.path.join(A.out_dir, "iso.png")
@@ -191,7 +202,8 @@ def general(A, no, title, scale):
     # zone scheme
     blk, off = A.model_block(no, 0)
     x0, y0, x1, y1 = P.bounds
-    kk = max(100.0, (x1 - x0 + 600) / 95.0, (y1 - y0 + 600) / 58.0)
+    avail = max(30.0, min(58.0, notes_bottom - 12.0 - 36.0))   # the scheme sits under the notes, never on them
+    kk = max(100.0, (x1 - x0 + 600) / 95.0, (y1 - y0 + 600) / avail)
     for r in P.rooms:
         S.fill(blk, r["shp"], ZONE_RGB.get(r.get("cls", "living"), (236, 224, 202)), "SD_Штриховка")
     Y.draw_walls(blk, P, kk)

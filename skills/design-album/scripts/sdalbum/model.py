@@ -198,10 +198,23 @@ class Project:
         existing wall within max_gap. Returns rectangles spanning the gap."""
         cuts = []
         outline = self.outline()
+
+        exist = [w for w in self.walls if w["kind"] == "existing"]
+
+        def column(w):                               # a free-standing column: no passage "between" columns
+            x0, y0, x1, y1 = w["shape"].bounds
+            if max(x1 - x0, y1 - y0) > 1.6 * min(x1 - x0, y1 - y0):
+                return False
+            near = w["shape"].buffer(5)
+            return not any(v is not w and near.intersects(v["shape"]) for v in exist)
+        runs = unary_union([w["shape"] for w in self.walls if w["kind"] == "existing" and not column(w)] or [Polygon()])
         for w in self.walls:
-            if w["kind"] != "existing":
+            if w["kind"] != "existing" or column(w):
                 continue
             g = w["shape"]
+            gx0, gy0, gx1, gy1 = g.bounds
+            if min(gx1 - gx0, gy1 - gy0) < 150:
+                continue                              # a partition stub (WC cubicle divider) ends in a room, not a passage
             x0, y0, x1, y1 = g.bounds
             ends = [((x0, x1), y1, 1), ((x0, x1), y0, -1)] if w["dir"] == "V" else [((y0, y1), x1, 1), ((y0, y1), x0, -1)]
             for (a, b), c, sgn in ends:
@@ -214,8 +227,12 @@ class Project:
                 if self.shell.contains(probe):
                     continue
                 hit = ray.intersection(self.shell.difference(g.buffer(0.5)))
-                if hit.is_empty or hit.area < 1:
+                hit_run = ray.intersection(runs.difference(g.buffer(0.5)))
+                if hit.is_empty or hit.area < 1 or hit_run.is_empty or hit_run.area < 1:
                     continue
+                pc = Point(probe.x - sgn * 5, probe.y) if w["dir"] != "V" else Point(probe.x, probe.y - sgn * 5)
+                if hit.distance(pc) < hit_run.distance(pc) - 1:
+                    continue                          # a column stands first: the space between is a hall, not a passage
                 hb = hit.bounds
                 if w["dir"] == "V":
                     d = (hb[1] - c) if sgn > 0 else (c - hb[3])
@@ -224,6 +241,12 @@ class Project:
                     d = (hb[0] - c) if sgn > 0 else (c - hb[2])
                     cut = box(min(c, c + sgn * d), a, max(c, c + sgn * d), b)
                 if d < 50 or cut.difference(outline).area > 0.05 * cut.area:
+                    continue
+                cx0, cy0, cx1, cy1 = cut.bounds          # a passage has room on both sides; a niche has a back wall
+                mid = ((cx0 + cx1) / 2.0, (cy0 + cy1) / 2.0)
+                sides = [Point(cx0 - 30, mid[1]), Point(cx1 + 30, mid[1])] if w["dir"] == "V" else \
+                    [Point(mid[0], cy0 - 30), Point(mid[0], cy1 + 30)]
+                if any(self.mass.contains(q) for q in sides):
                     continue
                 if any(cut.buffer(1).contains(q) or q.buffer(1).contains(cut) for q in cuts):
                     continue

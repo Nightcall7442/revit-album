@@ -84,10 +84,12 @@ def inward(room, seg):
     return n
 
 
-def wall_faces(P, room, clear=0.0, kinds=("window", "door", "balcony", "passage")):
+def wall_faces(P, room, clear=0.0, kinds=("window", "door", "balcony", "passage"), below=None):
     """Free wall faces of a room: boundary minus open edges (separations, passages) and minus openings widened by
-    `clear`. Returns [(LineString, inward normal)] with axis-aligned normals snapped."""
-    holes = [P.open_shape[o["id"]].buffer(clear + 1, cap_style=3) for o in P.openings if o["kind"] in kinds]
+    `clear`. `below` (a height, mm): a point that low is free under a high window (sill >= below + 100) - outlets of
+    a WC under a high narrow window. Returns [(LineString, inward normal)] with axis-aligned normals snapped."""
+    holes = [P.open_shape[o["id"]].buffer(clear + 1, cap_style=3) for o in P.openings if o["kind"] in kinds
+             and not (below is not None and o["kind"] == "window" and o.get("sill", 0) >= below + 100)]
     holes += [e.buffer(3) for e in P.open_edges()]
     cut = unary_union(holes) if holes else None
     out = []

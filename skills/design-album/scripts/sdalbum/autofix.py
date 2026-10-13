@@ -195,10 +195,25 @@ def _auto_grid(d, base_dir, log):
             for it in d.get(sec, []):
                 _shift(it, dx, dy, P)
         d["separations"] = [[[a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy]] for a, b in d.get("separations", [])]
+        shift_extras(d, dx, dy)
     d["grid"] = {"x": [[str(i + 1), v + dx] for i, v in enumerate(gx)],
                  "y": [[AXIS_LETTERS[i] if i < len(AXIS_LETTERS) else "Я%d" % i, v + dy] for i, v in enumerate(gy)]}
     L(log, "AXES", "оси по центрам несущих стен: %s / %s; начало координат - пересечение 1/А" % (
         ", ".join(n for n, _ in d["grid"]["x"]), ", ".join(n for n, _ in d["grid"]["y"])))
+
+
+def shift_extras(d, dx, dy):
+    """Evidence kept from the source scene (object names, lights, beams, ceiling sheets, curtains, equipment) moves
+    with the plan - otherwise rooms are named by objects standing in the wrong place."""
+    def rect(r):
+        return [r[0] + dx, r[1] + dy, r[2] + dx, r[3] + dy]
+    d["_objects"] = [[n, x + dx, y + dy] for n, x, y in d.get("_objects", [])]
+    d["_curtains"] = [rect(r) for r in d.get("_curtains", [])]
+    for k in ("_beams", "_ceil_planes"):
+        d[k] = [[rect(r), z] for r, z in d.get(k, [])]
+    for k in ("_lights", "_equipment"):
+        for it in d.get(k, []):
+            it["rect"] = rect(it["rect"])
 
 
 def _wall_centres(shell, tmin=150, tmax=700, lmin=1500):
@@ -240,7 +255,19 @@ def _auto_rooms(d, base_dir, log):
     mass = P.mass
     outer = unary_union([Polygon(g.exterior) for g in (mass.geoms if hasattr(mass, "geoms") else [mass])])
     inner = outer.difference(mass)
-    pieces = [g for g in (inner.geoms if hasattr(inner, "geoms") else [inner]) if g.area > 1.0e6]
+    if any(w["kind"] == "existing" for w in P.walls):        # same pieces as model.Project._rooms: minus passages,
+        th = P.throats()                                      # split by separations (a bar behind its counter)
+        if th:
+            inner = inner.difference(unary_union(th))
+    from shapely.geometry import LineString as _LS
+    pieces = list(inner.geoms) if hasattr(inner, "geoms") else [inner]
+    for a, b in d.get("separations", []):
+        new = []
+        for p in pieces:
+            parts = p.difference(_LS([a, b]).buffer(0.5, cap_style=2))
+            new.extend(list(parts.geoms) if hasattr(parts, "geoms") else [parts])
+        pieces = new
+    pieces = [g for g in pieces if g.area > 1.0e6]
     pieces.sort(key=lambda g: (-g.centroid.y, g.centroid.x))
     names = _names_by_contents(d, pieces)
     seen = {}
@@ -368,6 +395,8 @@ def _openings(d, P, log):
             _rename_refs(d, old, o["id"])
         o0 = groups[key][0]
         if mark not in types:
+            types[mark] = {}
+        if types[mark].get("auto", not types[mark]):
             h = o0.get("h", 1500 if pref == "ОК" else 2100)
             if pref == "ОК":
                 types[mark] = dict(oboz="ГОСТ 30674-99", name="Блок оконный ПВХ %d×%d" % (o0["w"], h), note="размеры уточнить по месту")
@@ -379,6 +408,7 @@ def _openings(d, P, log):
             else:
                 types[mark] = dict(oboz="ГОСТ 475-2016", name="Блок дверной внутренний %d×%d" % (o0["leaf"], 2000 if h >= 2050 else h - 50),
                                    leaf=o0["leaf"], style="door")
+            types[mark]["auto"] = True               # created here: senior / propose may refine it, a user's type never
     L(log, "OPENING_MARKS", "проёмы промаркированы (%d шт.), типы и полотна - по стандартным размерам" % n_new, n_new)
 
 
@@ -544,8 +574,8 @@ def _on_wall(d, P, log):
     n_move, n_side = 0, 0
     for sec, tol, label in (("switches", 30, "выключатель"), ("sockets", 30, "розетка"), ("plumbing", 160, "вывод")):
         for o in d.get(sec, []):
-            if sec == "plumbing" and o.get("h", 1) == 0:
-                continue
+            if (sec == "plumbing" and o.get("h", 1) == 0) or o.get("mount") == "furniture":
+                continue                       # floor outlets / sockets built into a counter are not on a wall
             p = (o["x"], o["y"])
             r = P.room_of_point(p, 320)
             if r is None:
@@ -726,9 +756,9 @@ def questions(d, P, rest):
             seen.add(txt)
             out.append(txt)
     for o in d.get("openings", []):
-        if o.get("check"):
+        if o.get("check") and not o.get("evidence"):
             out.append("%s: тип и ширина %d определены автоматически по разрыву стены - проверить по исходнику" % (o["id"], o["w"]))
-    auto = [r["name"] for r in d.get("rooms", []) if r.get("auto")]
+    auto = [r["name"] for r in d.get("rooms", []) if r.get("auto") and not r.get("purpose_why")]
     unnamed = [n for n in auto if n.startswith("Помещение")]
     named = [n for n in auto if not n.startswith("Помещение")]
     if named:
@@ -737,7 +767,7 @@ def questions(d, P, rest):
         out.append("помещения %s - назначение не определено (кухня, склад, кабинет...?): от него зависят отделка, свет, "
                    "розетки" % ", ".join("«%s»" % n for n in unnamed))
     lv = d.get("levels", {})
-    if d.get("_todo") or d.get("_draft"):
+    if (d.get("_todo") or d.get("_draft")) and not lv.get("source"):
         out.append("высота потолка %d и плиты %d приняты по умолчанию - уточнить замером" % (lv.get("ceiling", 0), lv.get("slab", 0)))
     return out
 

@@ -33,10 +33,10 @@ from shapely.ops import unary_union
 from . import model as M
 from . import topo as T
 
-SECTIONS = ("floors", "ceilings", "finishes", "plumbing", "lighting", "switches", "sockets", "panel", "circuits")
-LUX = {"living": 150, "kitchen": 150, "wet": 50, "circulation": 50, "storage": 75}
+SECTIONS = ("floors", "ceilings", "finishes", "plumbing", "lighting", "switches", "sockets", "panel", "circuits", "elevations")
+LUX = {"living": 150, "kitchen": 150, "wet": 50, "circulation": 50, "storage": 75, "public": 200, "bar": 200}
 FLUX, ETA, KZ = 500.0, 0.45, 1.25
-MIN_SPOTS = {"living": 4, "kitchen": 4, "wet": 2, "circulation": 2, "storage": 1}
+MIN_SPOTS = {"living": 4, "kitchen": 4, "wet": 2, "circulation": 2, "storage": 1, "public": 6, "bar": 3}
 BLOCK_WALL = ("wardrobe", "kitchen_base", "fridge", "shower", "bath", "wc", "basin", "washer", "sofa", "bed",
               "cabinet", "shoe_cabinet", "tv_stand", "armchair", "nightstand")
 NO_LIGHT_ABOVE = ("wardrobe", "kitchen_upper", "fridge", "cabinet")
@@ -77,12 +77,13 @@ def propose(data, base_dir=".", sections=None):
         _panel(d, P, log)
     if "circuits" in want and not d.get("circuits") and d.get("sockets"):
         _circuits(d, P, log)
-    if log:
-        qs = d.setdefault("meta", {}).setdefault("questions", [])
-        txt = "Разделы %s выполнены как проектное предложение агента по нормам - подтвердить или скорректировать." % (
+    P = M.Project(d, base_dir)
+    if "elevations" in want and not d.get("elevations"):
+        _elevations(d, P, log)
+    if log:                                  # a statement in the general notes, not a question to the client
+        txt = "По нормам как проектное предложение выполнены (отмечены на листах): %s." % (
             ", ".join(sorted(set(e["section"] for e in log))))
-        if txt not in qs:
-            qs.append(txt)
+        _note(d, "general", txt)
     return d, log
 
 
@@ -117,16 +118,16 @@ def _left(n):
     return (n[1], -n[0])
 
 
-def _on_face_point(P, room, q, n, along, clear=40):
+def _on_face_point(P, room, q, n, along, clear=40, below=None):
     """Point on the face at q moved `along` (mm) along the wall; None if it leaves a free face of the room."""
     t = (-n[1], n[0])
     p = (q[0] + t[0] * along, q[1] + t[1] * along)
-    return _validate_face(P, room, p, n, clear)
+    return _validate_face(P, room, p, n, clear, below)
 
 
-def _validate_face(P, room, p, n, clear=40):
+def _validate_face(P, room, p, n, clear=40, below=None):
     best = None
-    for seg, nn in T.wall_faces(P, room, clear):
+    for seg, nn in T.wall_faces(P, room, clear, below=below):
         if abs(nn[0] - n[0]) > 0.5 or abs(nn[1] - n[1]) > 0.5:
             continue
         dd = seg.distance(Point(p))
@@ -168,7 +169,13 @@ def _fixture_back(P, f, g, room):
 
 
 # ------------------------------------------------------------------ floors / ceilings / finishes
+def _public(d):
+    return d.get("meta", {}).get("building") == "public"
+
+
 def _floors(d, P, log):
+    if _public(d):
+        return _floors_public(d, P, log)
     by = {"plank": [], "tile": [], "wet": []}
     for r in P.rooms:
         c = r.get("cls", "living")
@@ -188,6 +195,32 @@ def _floors(d, P, log):
     d["floors"] = out
     _note(d, "floors", "Покрытия - проектное предложение: материал и раскладку согласовать с заказчиком.")
     L(log, "полы", "полы по назначению помещений: %s" % "; ".join("%s - %s" % (f["id"], f["material"]) for f in out), len(out))
+
+
+def _floors_public(d, P, log):
+    """Public interior: porcelain stoneware everywhere (wear, cleaning), anti-slip where water is (bar, WC)."""
+    spec = [("public", "Керамогранит 600×1200 матовый, R10 (зал)", [600, 1200],
+             "Керамогранит 10 мм; плиточный клей; стяжка"),
+            ("bar", "Керамогранит 600×600 противоскользящий R11 (бар)", [600, 600],
+             "Керамогранит 10 мм; плиточный клей; обмазочная гидроизоляция; стяжка"),
+            ("storage", "Керамогранит 600×600 R10 (служебные)", [600, 600], "Керамогранит 10 мм; плиточный клей; стяжка"),
+            ("wet", "Керамогранит 600×600 R10 (санузлы)", [600, 600],
+             "Керамогранит 10 мм; плиточный клей; обмазочная гидроизоляция с заведением на стены 200 мм; стяжка")]
+    cls_of = {r["name"]: r.get("cls", "living") for r in P.rooms}
+    out = []
+    used = set()
+    for key, mat, tile, layers in spec:
+        rooms = [n for n, c in cls_of.items() if (c == key) or (key == "storage" and c in ("storage", "circulation", "kitchen", "living"))]
+        rooms = [n for n in rooms if n not in used]
+        if not rooms:
+            continue
+        used.update(rooms)
+        out.append(dict(id="П%d" % (len(out) + 1), material=mat, pattern="tile", tile=tile, rooms=rooms, layers=layers,
+                        reserve=0.1, proposed=True))
+    d["floors"] = out
+    _note(d, "floors", "Покрытия - проектное предложение для общественного интерьера: износостойкий керамогранит, "
+                       "противоскользящий в мокрых зонах. Раскладку и цвет согласовать с заказчиком.")
+    L(log, "полы", "полы: " + "; ".join("%s - %s" % (f["id"], f["material"]) for f in out), len(out))
 
 
 def _plank_direction(P, names):
@@ -225,11 +258,15 @@ def _finishes(d, P, log):
     if any(r.get("cls") == "wet" for r in P.rooms):
         types.append(dict(id="О2", desc="Керамическая плитка / керамогранит на всю высоту (санузлы)", rgb=[60, 130, 200], proposed=True))
         by_class["wet"] = "О2"
+    if _public(d):
+        types[0]["desc"] = "Окраска износостойкой моющейся краской (класс 1-2 по мокрому истиранию), цвет по дизайну"
     segs = []
-    for f, g in T.furniture_shapes(P, ("kitchen_base",)):
+    for f, g in T.furniture_shapes(P, ("kitchen_base", "sink", "basin")):
         room = _room_of(P, f, g)
-        if room is None:
+        if room is None or (f.get("kind") != "kitchen_base" and room.get("cls") == "wet"):
             continue
+        if f.get("kind") in ("sink", "basin"):
+            g = g.buffer(150, join_style=2)          # the apron goes 150 beyond the sink on each side
         back = T.back_side(P, g, room)
         if back is None:
             continue
@@ -241,8 +278,8 @@ def _finishes(d, P, log):
             a, b = [max(x0, seg.bounds[0]), q[1]], [min(x1, seg.bounds[2]), q[1]]
         segs.append(dict(type="О3", a=[_r(v) for v in a], b=[_r(v) for v in b], proposed=True))
     if segs:
-        types.append(dict(id="О3", desc="Фартук: керамическая плитка / стеновая панель, h 550-650 над столешницей", rgb=[200, 160, 110],
-                          proposed=True))
+        types.append(dict(id="О3", desc="Фартук: керамическая плитка / стеновая панель, h 550-650 над столешницей / мойкой",
+                          rgb=[200, 160, 110], proposed=True))
     d["finishes"] = dict(types=types, by_class=by_class, segments=segs)
     L(log, "отделка", "отделка стен: О1 окраска%s%s" % (", О2 плитка в санузлах" if by_class else "", ", О3 фартук кухни" if segs else ""),
       len(types))
@@ -251,13 +288,23 @@ def _finishes(d, P, log):
 # ------------------------------------------------------------------ plumbing
 def _plumbing(d, P, log):
     out, skipped = [], []
-    for f, g in T.furniture_shapes(P, ("basin", "sink", "wc", "shower", "bath", "washer")):
+    for f, g in T.furniture_shapes(P, ("basin", "sink", "wc", "shower", "bath", "washer", "coffee", "heater", "dishwasher")):
         room = _room_of(P, f, g)
         if room is None:
             continue
         kind = f["kind"]
         name = {"basin": "Раковина", "sink": "Мойка", "wc": "Унитаз", "shower": "Смеситель душа", "bath": "Ванна",
-                "washer": "Стиральная машина"}[kind]
+                "washer": "Стиральная машина", "coffee": "Кофемашина", "heater": "Водонагреватель",
+                "dishwasher": "Посудомоечная машина"}[kind]
+        if kind == "wc" and f.get("hung"):
+            name = "Унитаз подвесной (инсталляция)"
+        if kind == "coffee" and f.get("on_counter"):     # on a free-standing counter: water and drain from the floor
+            c = g.centroid
+            out.append(dict(kind="ХВС", x=T.snap(c.x - 75), y=T.snap(c.y), h=0, fixture="Кофемашина (вода через фильтр, дренаж)",
+                            proposed=True, floor=True))
+            out.append(dict(kind="К50", x=T.snap(c.x + 75), y=T.snap(c.y), h=0, fixture="Кофемашина (вода через фильтр, дренаж)",
+                            proposed=True, floor=True))
+            continue
         if kind == "shower":
             c = g.centroid
             out.append(dict(kind="К50", x=T.snap(c.x), y=T.snap(c.y), h=0, fixture="Трап душевой", proposed=True))
@@ -270,7 +317,7 @@ def _plumbing(d, P, log):
         hung = "подвес" in f.get("name", "").lower() or f.get("hung")
 
         def at(along, kd, h, fx=name):
-            p = _on_face_point(P, room, q, n, -along, clear=10)         # +along = to the viewer's left
+            p = _on_face_point(P, room, q, n, -along, clear=10, below=h)   # +along = to the viewer's left
             if p is None:
                 return False
             out.append(dict(kind=kd, x=p[0], y=p[1], h=h, fixture=fx, proposed=True))
@@ -280,11 +327,23 @@ def _plumbing(d, P, log):
             hh = 550
             ok = at(50, "ГВС", hh) and at(-50, "ХВС", hh) and at(0, "К50", 450 if kind == "basin" else 500)
         elif kind == "wc":
-            ok = at(150, "ХВС", 1000 if hung else 200) and at(0, "К110", 230 if hung else 180)
+            hc = 1000 if hung else 200
+            if hung:                               # a window over the WC: low installation frame under the sill
+                face = seg.buffer(40)
+                sills = [o.get("sill", 0) for o in P.openings if o["kind"] == "window"
+                         and P.open_shape[o["id"]].intersects(face) and 600 < o.get("sill", 0) < 1300]
+                if sills:
+                    hc = T.snap(min(sills) - 200, 50)
+                    name = "Унитаз подвесной (инсталляция под окном, низкая рама)"
+            ok = at(150, "ХВС", hc, name) and at(0, "К110", 230 if hung else 180, name)
         elif kind == "shower":
             ok = at(75, "ГВС", 1100) and at(-75, "ХВС", 1100)
         elif kind == "bath":
             ok = at(75, "ГВС", 800) and at(-75, "ХВС", 800) and at(0, "К50", 100, "Ванна (слив)")
+        elif kind == "heater":
+            ok = at(-100, "ХВС", 1200, "Водонагреватель 80 л") and at(100, "ГВС", 1200, "Водонагреватель 80 л")
+        elif kind == "coffee":
+            ok = at(-75, "ХВС", 500, "Кофемашина (вода через фильтр, дренаж)") and at(75, "К50", 400, "Кофемашина (вода через фильтр, дренаж)")
         else:
             ok = at(150, "ХВС", 600) and at(-100, "К50", 600)
         if not ok:
@@ -435,16 +494,68 @@ def _approach(P, room, ent):
     return best[1] if best else None
 
 
+STAFF_KEYS = (("surface", "spot", "spot2", "spot_ip44", "spot2_ip44", "chandelier", "linear"), ("track", "track_spot", "track_rect"),
+              ("pendant",), ("led",))
+STAFF_DESC = ("общий свет", "шинопроводы, споты", "подвесы", "подсветка")
+
+
+def _staff_switches(d, P, groups, log):
+    """Public interior: the hall and the bar are switched by the staff, from the bar (a block of keys by kind of
+    light: general / tracks / pendants), not at the guests' entrance. -> [switch] or [] when there is no bar."""
+    bar = next((r for r in P.rooms if r.get("cls") == "bar"), None)
+    if bar is None:
+        return [], set()
+    halls = [r for r in P.rooms if r.get("cls") == "public" and r["name"] in groups]
+    ents = [e for e in T.room_entrances(P, bar) if e.get("other") is not None and e["other"].get("cls") == "public"]
+    ents = ents or T.room_entrances(P, bar)
+    if not ents:
+        return [], set()
+    ctl_all = []
+    for r in [bar] + halls:
+        if r["name"] not in groups:
+            continue
+        kinds = groups[r["name"]]
+        for keyset, desc in zip(STAFF_KEYS, STAFF_DESC):
+            ks = sorted(k for k in kinds if k in keyset)
+            if ks:
+                ctl_all.append(dict(group=r["name"], kinds=ks, desc="%s: %s" % (r["name"].lower(), desc)))
+    if not ctl_all:
+        return [], set()
+    cands = []
+    for e in ents:
+        for i in (0, 1):
+            cands += T.beside_points(P, bar, e["ends"][i], step=150.0, reach=400.0)
+    cands.sort(key=lambda c: c[2])
+    blocks = [ctl_all[i:i + 3] for i in range(0, len(ctl_all), 3)]
+    out, used = [], []
+    for blk in blocks:
+        if used:                                   # the next block right beside the first one (one panel of keys)
+            cands.sort(key=lambda c: math.hypot(c[0][0] - used[0][0], c[0][1] - used[0][1]))
+        for q, nn, _ in cands:
+            q2 = _snapq(q, nn)
+            if any(math.hypot(q2[0] - u[0], q2[1] - u[1]) < 120 for u in used):
+                continue
+            ctl = [dict(c, key="абвгд"[i]) for i, c in enumerate(blk)]
+            out.append(dict(x=q2[0], y=q2[1], h=900, wall=T.normal_code(nn), room=bar["name"], controls=ctl))
+            used.append(q2)
+            break
+    done = {c["group"] for s in out for c in s["controls"]}
+    if out:
+        L(log, "выключатели", "свет зала и бара - блоком выключателей у входа персонала в бар (%d клав.)" % len(ctl_all), len(out))
+    return out, done
+
+
 def _switches(d, P, log):
     lights = d.get("lighting", [])
     groups = {}
     for f in lights:
         groups.setdefault(f["group"], set()).add(f["kind"])
+    staff, done = _staff_switches(d, P, groups, log) if _public(d) else ([], set())
     entr = [o["id"] for o in P.openings if T.is_entrance(P, o)]
     sw = []
     missing = []
     for r in P.rooms:
-        if r["name"] not in groups:
+        if r["name"] not in groups or r["name"] in done:
             continue
         kinds = groups[r["name"]]
         ctl = []
@@ -502,7 +613,7 @@ def _switches(d, P, log):
                         sw.append(dict(x=pb[0], y=pb[1], h=700, wall=T.normal_code(nb), room=r["name"],
                                        controls=[dict(ctl[0], mode="pass")]))
                         break
-    sw = _merge_switches(sw)
+    sw = staff + _merge_switches(sw)
     used = [int(s["id"][1:]) for s in d.get("switches", []) if s.get("id", "")[1:].isdigit()]
     k = max(used) if used else 0
     for s in sw:
@@ -555,17 +666,35 @@ def _sockets(d, P, log):
             need = 0
         elif cls == "circulation":
             need = max(1, int(math.ceil(r["area_exact"] / 10.0 - 1e-9)))
+        elif cls == "public":                  # cleaning / service sockets every ~10 m of the perimeter
+            need = max(2, int(math.ceil(r["perimeter"] / 10.0 - 1e-9)))
+            _fill(P, r, mine, out, need, kind="Р", h=300)
+            for s_ in out[start:]:
+                s_.setdefault("note", "уборка / сервис")
+            need = 0
+        elif cls == "bar":
+            _bar_sockets(P, r, mine, out)
+            need = 2
+        elif cls == "storage":
+            _equipment_sockets(P, r, mine, out)
+            need = 2 if r["area_exact"] >= 6 else 1
         else:
             need = 0
         have = sum(1 for s in out[start:] if s["kind"] in ("Р", "Р2", "РВ") and s.get("count", True))
         if need > have:
-            _fill(P, r, mine, out, need - have, kind="РВ" if cls == "wet" else "Р2", h=300)
+            _fill(P, r, mine, out, need - have, kind="РВ" if cls == "wet" else ("Р" if cls in ("bar", "storage") else "Р2"),
+                  h=300)
         notes.append("%s: %d" % (r["name"], len(out) - start))
     for s in out:
         s.pop("count", None)
     d["sockets"] = out
-    _note(d, "sockets", "Количество розеток - не менее норм СП 256.1325800 (жилая комната - 1 на каждые 4 м периметра, кухня - "
-                        "не менее 4, коридор - 1 на 10 м²). Проектное предложение - уточнить по расстановке техники.")
+    if _public(d):
+        _note(d, "sockets", "Розетки зала - сервисные (уборка, оборудование) через ~10 м; оборудование бара - отдельные розетки "
+                            "в корпусе стойки по паспортам; кофемашина - отдельная линия 32 А. Проектное предложение - уточнить "
+                            "по выбранному оборудованию.")
+    else:
+        _note(d, "sockets", "Количество розеток - не менее норм СП 256.1325800 (жилая комната - 1 на каждые 4 м периметра, кухня - "
+                            "не менее 4, коридор - 1 на 10 м²). Проектное предложение - уточнить по расстановке техники.")
     L(log, "розетки", "розетки и выводы: " + "; ".join(notes), len(out))
 
 
@@ -718,6 +847,108 @@ def _kitchen_sockets(P, r, mine, out):
             _add(out, P, r, back[2], back[1], 0, "Р", 300, "холодильник")
 
 
+def _staff_edges(P, r, counter):
+    """Edges of a free-standing counter on the staff side (inside the room, not a wall, not the guests' front - the
+    separation line). -> [(segment, outward axis normal)]"""
+    out = []
+    cs = list(counter.exterior.coords)
+    for a, b in zip(cs[:-1], cs[1:]):
+        seg = LineString([a, b])
+        if seg.length < 200:
+            continue
+        mid = seg.interpolate(0.5, normalized=True)
+        n = ((b[1] - a[1]) / seg.length, -(b[0] - a[0]) / seg.length)
+        if counter.contains(Point(mid.x + n[0] * 30, mid.y + n[1] * 30)):
+            n = (-n[0], -n[1])
+        out_pt = Point(mid.x + n[0] * 120, mid.y + n[1] * 120)
+        if not r["shp"].contains(out_pt) or P.mass.contains(out_pt):
+            continue
+        if any(LineString(s_).buffer(5).contains(seg) for s_ in P.separations):
+            continue                                       # the guests' side
+        out.append((seg, (int(round(n[0])), int(round(n[1])))))
+    return out
+
+
+def _in_counter(P, r, counter, near):
+    """A point on the staff side of a free-standing counter, opposite `near` (equipment under / on it) - sockets of
+    the bar equipment are built into the counter (mount 'furniture'). -> (point, outward normal) or None"""
+    best = None
+    for seg, n in _staff_edges(P, r, counter):
+        L_ = seg.length
+        q = seg.interpolate(min(max(seg.project(near), 100.0), L_ - 100.0))
+        dd = q.distance(near)
+        if best is None or dd < best[0]:
+            best = (dd, (q.x, q.y), n)
+    if best is None:
+        return None
+    return (T.snap(best[1][0]), T.snap(best[1][1])), best[2]
+
+
+def _bar_sockets(P, r, mine, out):
+    counters = [(f, g) for f, g in mine if f.get("kind") == "counter"]
+    for f, g in mine:
+        k = f.get("kind")
+        if k not in ("coffee", "grinder", "pos", "fridge", "dishwasher", "ice"):
+            continue
+        host = next((cg for cf, cg in counters if cg.buffer(20).contains(g.centroid)), None)
+        spec = {"coffee": ("Р32", 300, "кофемашина, отдельная линия"), "grinder": ("Р", 1100, "кофемолка"),
+                "pos": ("Р", 300, "касса POS"), "fridge": ("Р", 300, "холодильник"), "dishwasher": ("Р", 300, "ПММ"),
+                "ice": ("Р", 300, "льдогенератор")}[k]
+        if host is not None:
+            res = _in_counter(P, r, host, g.centroid)
+            if res is not None:
+                p, n = res
+                out.append(_pt(spec[0], p, spec[1], n, note=spec[2] + " (в корпусе стойки)", mount="furniture"))
+                if k == "pos":
+                    t = (-n[1], n[0])
+                    for sg in (1, -1):              # beside the socket, on the same face of the counter
+                        q = (T.snap(p[0] + sg * t[0] * 150), T.snap(p[1] + sg * t[1] * 150))
+                        if host.exterior.distance(Point(q)) <= 5 and host.buffer(-5).distance(Point(q)) > 0:
+                            out.append(_pt("LAN", q, spec[1], n, mount="furniture", note="касса POS (LAN)"))
+                            break
+                continue
+        back = T.back_side(P, g, r)
+        if back is not None:
+            _add(out, P, r, back[2], back[1], 0, spec[0], spec[1], spec[2])
+    taken = [(s_["x"], s_["y"]) for s_ in out]
+    for f, g in counters:                      # refrigerated tables under the counter top: one socket each
+        m = re.search(r"×(\d+)", f.get("name", ""))
+        n_fr = int(m.group(1)) if m else 0
+        edges = _staff_edges(P, r, g)
+        total = sum(e.length for e, _ in edges)
+        if not n_fr or not total:
+            continue
+        for i in range(n_fr):
+            t = (i + 0.5) / n_fr * total
+            acc = 0.0
+            for e, n in edges:
+                if acc + e.length >= t:
+                    for shift in (0, 300, -300, 600, -600):    # clear of the coffee machine / POS sockets
+                        q = e.interpolate(min(max(t - acc + shift, 100.0), e.length - 100.0))
+                        p = (T.snap(q.x), T.snap(q.y))
+                        if all(math.hypot(p[0] - u[0], p[1] - u[1]) > 250 for u in taken):
+                            out.append(_pt("Р", p, 300, n, note="холодильный стол (в корпусе стойки)", mount="furniture"))
+                            taken.append(p)
+                            break
+                    break
+                acc += e.length
+
+
+def _equipment_sockets(P, r, mine, out):
+    for f, g in mine:
+        if f.get("kind") != "heater":
+            continue
+        back = T.back_side(P, g, r)
+        if back is None:
+            continue
+        _, n, q = back
+        x0, y0, x1, y1 = g.bounds
+        half = ((y1 - y0) if abs(n[0]) > 0.5 else (x1 - x0)) / 2.0
+        for side in (1, -1):
+            if _add(out, P, r, q, n, side * (half + 150), "Р", 1800, "водонагреватель, отдельная линия", count=False):
+                break
+
+
 def _wet_sockets(P, r, mine, out):
     wet_zone = unary_union([g.buffer(600) for f, g in mine if f.get("kind") in ("shower", "bath")] or [Polygon()])
     for f, g in mine:
@@ -737,7 +968,8 @@ def _wet_sockets(P, r, mine, out):
         for side in (1, -1):
             p = _on_face_point(P, r, q, n, side * (half + 150), 40)
             if p is not None and not wet_zone.contains(Point(p)):
-                out.append(_pt("РВ", p, 1100, n, note="IP44, фен"))
+                public = getattr(P, "d", {}).get("meta", {}).get("building") == "public"
+                out.append(_pt("РВ", p, 1100, n, note="IP44, сушилка для рук" if public else "IP44, фен"))
                 break
 
 
@@ -782,6 +1014,10 @@ def _fill(P, r, mine, out, k, kind, h):
 
 # ------------------------------------------------------------------ panel and circuits
 def _panel(d, P, log):
+    if _public(d):
+        staff = [r for r in P.rooms if r.get("cls") in ("storage",)] or [r for r in P.rooms if r.get("cls") == "bar"]
+        if staff:
+            return _panel_in(d, P, log, staff[0])
     entr = [o for o in P.openings if T.is_entrance(P, o)]
     pts = [(s["x"], s["y"]) for s in d.get("switches", [])] + [(s["x"], s["y"]) for s in d.get("sockets", [])]
     best = None
@@ -812,7 +1048,120 @@ def _panel(d, P, log):
     L(log, "щит", "%s у входа, низ +1,500" % ("щит квартирный ЩК" if flat else "щит распределительный ЩР"), 1)
 
 
+def _panel_in(d, P, log, room):
+    """Public building: ЩР in a staff room next to its door (not in the guests' hall), bottom +1,500, clear of
+    furniture and other points."""
+    pts = [(s["x"], s["y"]) for s in d.get("switches", [])] + [(s["x"], s["y"]) for s in d.get("sockets", [])]
+    furn = unary_union([g.buffer(50) for f, g in T.furniture_shapes(P) if f.get("kind") not in ("rug",)] or [Polygon()])
+    doors = [P.open_shape[o["id"]].centroid for o, n, fp in T.room_openings(P, room)]
+    best = None
+    for seg, nn in T.wall_faces(P, room, 150):
+        if seg.length < 600:
+            continue
+        s_ = 300.0
+        while s_ <= seg.length - 300:
+            q = seg.interpolate(s_)
+            body = box(q.x - 260, q.y - 260, q.x + 260, q.y + 260)
+            if (pts and min(math.hypot(q.x - x, q.y - y) for x, y in pts) < 450) or body.intersects(furn):
+                s_ += 50
+                continue
+            dist = min((q.distance(c) for c in doors), default=0.0)
+            if best is None or dist < best[0]:
+                best = (dist, (q.x, q.y), nn)
+            s_ += 50
+    if best is None:
+        return
+    _, q, nn = best
+    q = (_r(q[0]), T.snap(q[1])) if abs(nn[0]) > 0.5 else (T.snap(q[0]), _r(q[1]))
+    d["panel"] = dict(name="ЩР", x=q[0], y=q[1], w=500, wall=T.normal_code(nn), bottom=1500, proposed=True)
+    L(log, "щит", "щит распределительный ЩР в «%s» у входа (служебная зона, не в зале), низ +1,500" % room["name"], 1)
+
+
+def _circuits_public(d, P, log):
+    rows = [["Ввод", "ВА 3P C50 + реле контроля напряжения + УЗИП", "ВВГнг(А)-LS 5×16",
+             "Ввод - по ТУ сетевой организации; мощность уточняется расчётом нагрузок"]]
+    g = 0
+    socks = d.get("sockets", [])
+    room_of = {id(s): (P.room_of_point((s["x"], s["y"]), 80) or {}) for s in socks}
+
+    def new(app, cab, txt):
+        nonlocal g
+        g += 1
+        rows.append([str(g), app, cab, txt])
+        return str(g)
+    light_rooms = {}
+    for f in d.get("lighting", []):
+        r = P.room_by_name.get(f.get("group"))
+        light_rooms.setdefault(r.get("cls") if r else "?", set()).add(f.get("group"))
+    if light_rooms.get("public"):
+        kinds = {f["kind"] for f in d.get("lighting", []) if P.room_by_name.get(f.get("group"), {}).get("cls") == "public"}
+        new("АВ 1P C10", "ВВГнг(А)-LS 3×1,5", "Освещение зала: общее")
+        if kinds & {"track", "track_spot"}:
+            new("АВ 1P C10", "ВВГнг(А)-LS 3×1,5", "Освещение зала: шинопроводы")
+    other = sorted(set().union(*[v for k, v in light_rooms.items() if k not in ("public",)])) if light_rooms else []
+    if other:
+        new("АВ 1P C10", "ВВГнг(А)-LS 3×1,5", "Освещение: " + ", ".join(n.lower() for n in other))
+    new("АВ 1P C6", "ВВГнг(А)-FRLS 3×1,5", "Аварийное освещение, знак «ВЫХОД» (по разделу ЭО)")
+    assign = {}
+    hall = [s for s in socks if room_of[id(s)].get("cls") == "public" and s["kind"] in ("Р", "Р2")]
+    if hall:
+        gh = new("АВДТ C16 30 мА", "ВВГнг(А)-LS 3×2,5", "Розетки зала (уборка, сервис)")
+        for s in hall:
+            assign[id(s)] = gh
+    cof = [s for s in socks if s["kind"] == "Р32"]
+    if cof:
+        gc = new("АВДТ C32 30 мА", "ВВГнг(А)-LS 3×6", "Кофемашина")
+        for s in cof:
+            assign[id(s)] = gc
+    fr = [s for s in socks if "холодильн" in s.get("note", "")]
+    for i in range(0, len(fr), 2):
+        gf = new("АВДТ C16 30 мА", "ВВГнг(А)-LS 3×2,5", "Холодильное оборудование бара (%d шт.)" % len(fr[i:i + 2]))
+        for s in fr[i:i + 2]:
+            assign[id(s)] = gf
+    bar = [s for s in socks if room_of[id(s)].get("cls") == "bar" and id(s) not in assign and s["kind"] in ("Р", "Р2", "РВ")]
+    if bar:
+        gb = new("АВДТ C16 30 мА", "ВВГнг(А)-LS 3×2,5", "Розетки бара (кофемолка, касса, мелкая техника)")
+        for s in bar:
+            assign[id(s)] = gb
+    heat = [s for s in socks if "водонагрев" in s.get("note", "")]
+    if heat:
+        gw = new("АВДТ C16 30 мА", "ВВГнг(А)-LS 3×2,5", "Водонагреватель 80 л (2 кВт)")
+        for s in heat:
+            assign[id(s)] = gw
+    serv = [s for s in socks if room_of[id(s)].get("cls") in ("storage", "circulation") and id(s) not in assign
+            and s["kind"] in ("Р", "Р2")]
+    if serv:
+        gs = new("АВДТ C16 30 мА", "ВВГнг(А)-LS 3×2,5", "Розетки служебных помещений")
+        for s in serv:
+            assign[id(s)] = gs
+    wet = [s for s in socks if s["kind"] == "РВ" and id(s) not in assign]
+    if wet:
+        gwt = new("АВДТ C16 10 мА", "ВВГнг(А)-LS 3×2,5", "Санузлы: сушилки для рук, розетки IP44")
+        for s in wet:
+            assign[id(s)] = gwt
+    acs = [e for e in d.get("_equipment", []) if e.get("kind") == "ac"]
+    for i, e in enumerate(acs, 1):
+        new("АВ 1P C16", "ВВГнг(А)-LS 3×2,5", "Кондиционер кассетный %d (по модели)" % i)
+    new("АВДТ C10 30 мА", "ВВГнг(А)-LS 3×1,5", "Вывеска, подсветка витрины")
+    new("АВ 1P C16", "-", "Резерв")
+    new("АВ 1P C16", "-", "Резерв")
+    for s in socks:
+        if s.get("group"):
+            continue
+        if s["kind"] in ("ТВ", "LAN"):
+            s["group"] = "сл."
+        else:
+            s["group"] = assign.get(id(s)) or (list(assign.values())[0] if assign else "1")
+    if any(s["kind"] in ("ТВ", "LAN") for s in socks):
+        rows.append(["сл.", "-", "UTP cat.6", "LAN (касса) - от слаботочного шкафа / роутера"])
+    d["circuits"] = rows
+    L(log, "группы щита", "ЩР: %d групп (освещение, аварийное, оборудование бара отдельными линиями, УЗО 30 мА, санузлы 10 мА)"
+      % g, len(rows))
+
+
 def _circuits(d, P, log):
+    if _public(d):
+        return _circuits_public(d, P, log)
     rows = [["Ввод", "ВА 2P C40 + реле напряжения 63 А + УЗИП", "ВВГнг(А)-LS 3×10", "Вводной кабель - по ТУ"],
             ["1", "АВ 1P C10", "ВВГнг(А)-LS 3×1,5", "Освещение"]]
     g = 1
@@ -865,6 +1214,185 @@ def _circuits(d, P, log):
         rows.append(["сл.", "-", "UTP cat.6, RG-6", "TV / LAN от слаботочного щитка"])
     d["circuits"] = rows
     L(log, "группы щита", "групповые линии: %d (УЗО 30 мА на розетки, 10 мА - санузлы)" % (len(rows) - 1), len(rows))
+
+
+# ------------------------------------------------------------------ elevations (wet rooms, bar, utility walls)
+ELEV_LETTERS = "АБВГДЕЖИКЛМНПРСТУФШЭЮЯ"
+
+
+def _faces_cw(room):
+    """Wall runs of a room, clockwise seen from above, the room on the right of a->b (the elevation seen from inside,
+    left to right); collinear pieces merged."""
+    ring = list(room["shp"].exterior.coords)[:-1]
+    if Polygon(ring).exterior.is_ccw:
+        ring = ring[::-1]
+    pts = []
+    for i, p in enumerate(ring):                    # drop collinear vertices
+        a, b = ring[i - 1], ring[(i + 1) % len(ring)]
+        cross = (p[0] - a[0]) * (b[1] - p[1]) - (p[1] - a[1]) * (b[0] - p[0])
+        if abs(cross) > 1.0:
+            pts.append(p)
+    return [(pts[i], pts[(i + 1) % len(pts)]) for i in range(len(pts))]
+
+
+def _fixture_elev(f, g, E, room, P):
+    """Front view of an item standing at the wall: items (cabinets, worktop) and fixtures (sanitary ware) in s, z."""
+    x0, y0, x1, y1 = g.bounds
+    ss = sorted(E.s_of(x, y) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
+    s0, s1 = max(0.0, ss[0]), min(E.L, ss[-1])
+    if s1 - s0 < 50:
+        return [], [], None
+    c = (s0 + s1) / 2.0
+    k = f.get("kind")
+    items, fx, eq = [], [], None
+    nm = f.get("name", "")
+    if k == "wc":
+        hung = f.get("hung")
+        z0 = 230 if hung else 0
+        fx.append(dict(name="унитаз", poly=[[c - 120, z0], [c + 120, z0], [c + 175, 330], [c + 180, 400], [c - 180, 400],
+                                           [c - 175, 330]]))
+        fx.append(dict(name="сиденье", poly=[[c - 185, 400], [c + 185, 400], [c + 185, 430], [c - 185, 430]]))
+        if hung:                                   # the flush plate on the front of the installation box
+            fx.append(dict(name="клавиша смыва", poly=[[c - 120, 780], [c + 120, 780], [c + 120, 930], [c - 120, 930]]))
+        eq = [nm, "ХВС, К110" + (", рама инсталляции" if hung else "")]
+        label = None
+    elif k == "basin":
+        w = max(min(s1 - s0, 700), 300)
+        fx.append(dict(name="раковина", poly=[[c - w / 2, 700], [c + w / 2, 700], [c + w / 2, 850], [c - w / 2, 850]]))
+        fx.append(dict(name="сифон", poly=[[c - 30, 450], [c + 30, 450], [c + 30, 700], [c - 30, 700]], outline_only=True))
+        fx.append(dict(name="смеситель", poly=[[c - 25, 850], [c + 25, 850], [c + 25, 1050], [c - 25, 1050]]))
+        eq = [nm, "ХВС, ГВС, К50"]
+    elif k == "sink":
+        items += [dict(type="plinth", s0=s0, s1=s1, z0=0, z1=100), dict(type="base", s0=s0, s1=s1, z0=100, z1=850),
+                  dict(type="worktop", s0=s0 - 10, s1=s1 + 10, z0=850, z1=890, label="мойка")]
+        fx.append(dict(name="смеситель", poly=[[c - 25, 890], [c + 25, 890], [c + 25, 1150], [c - 25, 1150]]))
+        eq = [nm, "ХВС, ГВС, К50"]
+    elif k == "heater":
+        z = f.get("z") or [1300, 2100]
+        fx.append(dict(name="водонагреватель", poly=[[c - 225, z[0]], [c + 225, z[0]], [c + 225, z[1]], [c - 225, z[1]]]))
+        items.append(dict(type="panel", s0=c - 5, s1=c + 5, z0=z[0], z1=z[0] - 1, label=None))
+        eq = [nm, "ХВС, ГВС, розетка 16 А"]
+    elif k in ("cabinet", "wardrobe"):
+        h = int(f.get("h") or (1800 if k == "cabinet" else 2000))
+        if "стеллаж" in nm.lower():
+            items += [dict(type="side", s0=s0, s1=s0 + 30, z0=0, z1=h), dict(type="side", s0=s1 - 30, s1=s1, z0=0, z1=h)]
+            for zz in range(150, h, 400):
+                items.append(dict(type="shelf", s0=s0 + 30, s1=s1 - 30, z0=zz, z1=zz + 25))
+            items.append(dict(type="shelf", s0=s0 + 30, s1=s1 - 30, z0=h - 25, z1=h, label="стеллаж h%d" % h))
+        else:
+            items.append(dict(type="tall", s0=s0, s1=s1, z0=0, z1=h, label=nm.split(" ")[0].lower()))
+    elif k == "mirror":
+        z = f.get("z") or [1100, 1700]
+        fx.append(dict(name="зеркало", poly=[[s0, z[0]], [s1, z[0]], [s1, z[1]], [s0, z[1]]], glass=True))
+    elif k == "fridge":
+        h = int(f.get("h") or 1850)
+        items.append(dict(type="appliance", s0=s0, s1=s1, z0=0, z1=h, label="холодильник"))
+    return items, fx, eq
+
+
+def _backed_on(P, f, g, room, E):
+    """The item stands against this very wall (its back face lies on the elevation line), not against the wall
+    meeting it at the corner."""
+    back = T.back_side(P, g, room)
+    if back is None:
+        return False
+    seg = back[0]
+    (ax, ay), (bx, by) = seg.coords[0], seg.coords[-1]
+    L_ = math.hypot(bx - ax, by - ay) or 1.0
+    par = abs((bx - ax) / L_ * E.ux[1] - (by - ay) / L_ * E.ux[0]) < 0.05
+    return par and E.line.distance(seg.interpolate(0.5, normalized=True)) < 5
+
+
+def _elevations(d, P, log):
+    """Elevations where the builder needs them: every tiled wall of the wet rooms (with fixtures, outlets, windows or
+    long enough to need a layout) and the walls with sinks / basins / water heaters elsewhere (bar, utility)."""
+    out = []
+    wet = [r for r in P.rooms if r.get("cls") == "wet"]
+    # adjacent wet rooms (a WC lobby with its cubicles) are one group: one plan, one materials table
+    groups, seen = [], set()
+    for r in wet:
+        if r["name"] in seen:
+            continue
+        grp, todo = [r], [r]
+        seen.add(r["name"])
+        while todo:
+            x = todo.pop()
+            for e in T.room_entrances(P, x):
+                o = e.get("other")
+                if o is not None and o.get("cls") == "wet" and o["name"] not in seen:
+                    seen.add(o["name"])
+                    grp.append(o)
+                    todo.append(o)
+        groups.append(grp)
+    wall_items = ("basin", "sink", "heater", "wc", "mirror", "cabinet", "wardrobe", "fridge")
+    others = [r for r in P.rooms if r.get("cls") in ("bar", "storage", "kitchen")]
+    for grp in groups + [[r] for r in others]:
+        is_wet = grp[0].get("cls") == "wet"
+        gname = grp[0]["name"] if len(grp) == 1 else ("Санузлы" if is_wet else grp[0]["name"])
+        letters = iter(ELEV_LETTERS)
+        n_before = len(out)
+        for room in sorted(grp, key=lambda r: (-r["shp"].centroid.y, r["shp"].centroid.x)):
+            H = int(room.get("ceiling_level") or P.ceiling)
+            furn = [(f, g) for f, g in T.furniture_shapes(P, wall_items) if _room_of(P, f, g) is room]
+            for a, b in _faces_cw(room):
+                L_ = math.hypot(b[0] - a[0], b[1] - a[1])
+                if L_ < 500:
+                    continue
+                e = dict(group=gname, room=room["name"], a=[_r(a[0]), _r(a[1])], b=[_r(b[0]), _r(b[1])], height=H,
+                         tile=[600, 1200], proposed=True)
+                from .sheets_details import Elev
+                E = Elev(P, e)
+                items, fixtures, eqs = [], [], []
+                for f, g in furn:
+                    if not _backed_on(P, f, g, room, E):
+                        continue
+                    it, fx, eq = _fixture_elev(f, g, E, room, P)
+                    items += [x for x in it if x.get("z1", 0) > x.get("z0", 0)]
+                    fixtures += fx
+                    if eq:
+                        eqs.append(eq)
+                pts = [o for o in P.plumbing if o.get("h", 0) > 0 and E.on_wall(o["x"], o["y"])]
+                socks = [o for o in P.sockets if E.on_wall(o["x"], o["y"], 60) and o.get("mount") != "furniture"]
+                wins = [op for op in E.openings() if op["o"]["kind"] == "window"]
+                busy = bool(items or fixtures or pts or socks or wins) if is_wet else bool(pts)
+                if not busy and (not is_wet or L_ < 1800):
+                    continue
+                if any(f.get("kind") == "wc" and f.get("hung") and _backed_on(P, f, g, room, E) for f, g in furn):
+                    top = min([op["z0"] for op in wins if op["z0"] > 600] + [1200])
+                    items.insert(0, dict(type="panel", s0=0, s1=_r(E.L), z0=0, z1=top,
+                                         label=("короб инсталляции %+.3f" % (top / 1000.0)).replace(".", ",")))
+                if is_wet:
+                    e["base"] = "tile"
+                    e["zones"] = [dict(s0=0, s1=_r(E.L), z0=0, z1=H, mat="tile")]
+                else:
+                    e["base"] = "paint"
+                    zones = []
+                    for f, g in furn:
+                        if f.get("kind") not in ("sink", "basin"):
+                            continue
+                        back = T.back_side(P, g, room)
+                        if back is None or back[0].distance(E.line) > 5:
+                            continue
+                        x0, y0, x1, y1 = g.buffer(150, join_style=2).bounds
+                        ss = sorted(E.s_of(x, y) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
+                        zones.append(dict(s0=_r(max(0.0, ss[0])), s1=_r(min(E.L, ss[-1])), z0=0, z1=1500, mat="apron"))
+                    e["zones"] = zones
+                    if not zones and not items and not fixtures:
+                        continue
+                e["items"] = items
+                e["fixtures"] = fixtures
+                if eqs:
+                    e["equipment"] = eqs
+                e["label"] = next(letters)
+                out.append(e)
+        if len(out) > n_before:
+            L(log, "развёртки", "развёртки «%s»: %d стен%s" % (gname, len(out) - n_before,
+                                                             " (плитка на всю высоту)" if is_wet else " с сантехникой / оборудованием"),
+              len(out) - n_before)
+    if out:
+        d["elevations"] = out
+        _note(d, "elevations", "Развёртки - проектное предложение: раскладка плитки и высоты приборов уточняются по выбранной "
+                               "сантехнике.")
 
 
 def print_log(log):

@@ -291,6 +291,8 @@ def _shift(it, dx, dy, P=None):
     for k in ("poly",):
         if it.get(k):
             it[k] = [[_rnd(p[0] + dx), _rnd(p[1] + dy)] + list(p[2:]) for p in it[k]]
+    if it.get("front"):                                       # counter fronts: [[a, b], ...]
+        it["front"] = [[[_rnd(a[0] + dx), _rnd(a[1] + dy)], [_rnd(b[0] + dx), _rnd(b[1] + dy)]] for a, b in it["front"]]
     if it.get("rect"):
         x0, y0, x1, y1 = it["rect"]
         it["rect"] = [_rnd(x0 + dx), _rnd(y0 + dy), _rnd(x1 + dx), _rnd(y1 + dy)]

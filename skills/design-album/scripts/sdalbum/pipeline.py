@@ -84,11 +84,11 @@ def _import(src, out, scale=None, say=print):
 
 
 def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=None, sheets=None, say=print):
-    from . import album, autofix, history, propose, qa, validate
+    from . import album, autofix, history, propose, qa, senior, validate
     t0 = time.time()
     os.makedirs(out, exist_ok=True)
     src = pick_input(src)
-    rep = dict(input=os.path.abspath(src), out=os.path.abspath(out), status="", notes=[], fixes=[], proposals=[],
+    rep = dict(input=os.path.abspath(src), out=os.path.abspath(out), status="", notes=[], fixes=[], decisions=[], proposals=[],
                questions=[], data=[], sheets=[], errors=0, warnings=0, files={})
     say("Вход: %s" % src)
     draft, kind, notes = _import(src, out, scale, say)
@@ -118,15 +118,22 @@ def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=
         json.dump(dict(hash=h, input=os.path.abspath(src)), open(mark, "w", encoding="utf-8"))
     d = history.load(proj)
     d2, flog, rest, qs = autofix.fix(d, out)
-    plog = []
+    plog, slog = [], []
+    if propose_:                             # senior decisions first (rooms, ceilings, model lights, equipment)
+        d3, slog = senior.decide(d2, out)
+        if slog:
+            d2, flog2, rest, qs = autofix.fix(d3, out)
+            flog += flog2
     if propose_:
         d3, plog = propose.propose(d2, out)
         if plog:
             d2, flog2, rest, qs = autofix.fix(d3, out)
             flog += flog2
     if d2 != d:
-        history.save(proj, d2, "make: автоисправления %d, проектное предложение %d" % (len(flog), len(plog)), flog + plog)
-    rep["fixes"] = [e["msg"] for e in flog]
+        history.save(proj, d2, "make: автоисправления %d, решения %d, проектное предложение %d" % (len(flog), len(slog), len(plog)),
+                     flog + slog + plog)
+    rep["fixes"] = list(dict.fromkeys(e["msg"] for e in flog))
+    rep["decisions"] = ["**%s**: %s%s" % (e["topic"], e["msg"], (" - %s" % e["why"]) if e.get("why") else "") for e in slog]
     rep["proposals"] = [e["msg"] for e in plog]
     rep["questions"] = list(dict.fromkeys(qs + list(d2.get("meta", {}).get("questions", []))))
     rep["data"] = rest
@@ -246,6 +253,8 @@ def _write(rep, out):
         L += ["## Исходные данные", ""] + ["- " + s for s in rep["notes"]] + [""]
     if rep.get("fixes"):
         L += ["## Исправлено автоматически", ""] + ["- " + s for s in rep["fixes"]] + [""]
+    if rep.get("decisions"):
+        L += ["## Решения агента (приняты по нормам и модели, вопросов не требуют)", ""] + ["- " + s for s in rep["decisions"]] + [""]
     if rep.get("proposals"):
         L += ["## Проектное предложение по нормам (подтвердить)", ""] + ["- " + s for s in rep["proposals"]] + [""]
     if rep.get("questions"):

@@ -23,9 +23,10 @@ SHEET_TITLES = {
     "partitions": "План монтажа перегородок", "furniture": "План расстановки мебели", "floors": "План полов",
     "ceilings": "План потолков", "lighting": "План освещения", "sockets": "План розеток и электровыводов",
     "plumbing": "План сантехники", "finishes": "План отделки стен", "openings": "Ведомость заполнения проёмов",
+    "windows": "Окна и витражи",
 }
 DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "furniture", "floors", "ceilings", "lighting",
-                 "sockets", "plumbing", "finishes", "elevations", "openings"]
+                 "sockets", "plumbing", "finishes", "elevations", "openings", "windows"]
 
 
 class Column:
@@ -157,6 +158,7 @@ class Album:
             "sockets": (SP.sockets, "1:%d" % self.plan_k), "plumbing": (SP.plumbing, "1:%d" % self.plan_k),
             "finishes": (SP.finishes, "1:%d" % self.plan_k),
             "openings": (SD.openings_schedule, "1:%d" % SD.openings_k(P)),
+            "windows": (SD.windows_sheet, "1:%d, 1:10" % SD.windows_k(P)),
         }
         n = 0
         for key in self.sheet_keys:

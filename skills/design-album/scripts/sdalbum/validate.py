@@ -14,7 +14,9 @@ KNOWN_LIGHTS = ("spot", "spot_ip44", "spot2", "spot2_ip44", "surface", "chandeli
 STACKABLE = {("kitchen_upper", "kitchen_base"), ("kitchen_upper", "fridge"), ("sink", "kitchen_base"), ("hob", "kitchen_base"),
              ("tv", "tv_stand"), ("tv", "cabinet"), ("mirror", "shoe_cabinet"), ("mirror", "cabinet"), ("rail", "wc"),
              ("basin", "wc"), ("mirror", "basin"), ("kitchen_upper", "sink"), ("kitchen_upper", "hob"), ("chair", "table"),
-             ("kitchen_upper", "kitchen_base")}
+             ("kitchen_upper", "kitchen_base"), ("armchair", "table"), ("sofa", "table"), ("coffee", "counter"),
+             ("pos", "counter"), ("grinder", "counter"), ("dishwasher", "counter"), ("heater", "sink"), ("heater", "basin"),
+             ("heater", "cabinet"), ("mirror", "sink")}
 
 
 def I(code, level, msg, where=None):
@@ -310,7 +312,12 @@ def _sockets(P):
         lab = "розетка %s (%d,%d)" % (s["kind"], s["x"], s["y"])
         if s["kind"] not in KNOWN_SOCKETS:
             out.append(I("SOCKET_KIND", "warning", "%s: неизвестный тип" % lab, (s["x"], s["y"])))
-        out += _on_wall(P, s["x"], s["y"], s.get("wall"), 30, lab, "SOCKET")
+        if s.get("mount") == "furniture":       # built into a counter / cabinet: on its face, not on a wall
+            pt = Point(s["x"], s["y"])
+            if not any(Polygon(f["poly"]).buffer(0).exterior.distance(pt) <= 30 for f in P.furniture if f.get("poly")):
+                out.append(I("SOCKET_NOT_ON_FURNITURE", "error", "%s: не на корпусе мебели" % lab, (s["x"], s["y"])))
+        else:
+            out += _on_wall(P, s["x"], s["y"], s.get("wall"), 30, lab, "SOCKET")
         if not 150 <= s.get("h", 300) <= 2600:
             out.append(I("SOCKET_HEIGHT", "warning", "%s: высота %d" % (lab, s.get("h", 0)), (s["x"], s["y"])))
         if s.get("group") in (None, ""):
