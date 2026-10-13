@@ -30,3 +30,10 @@ python3 sda.py make ../examples/urgench-apartment/project.json /tmp/out
 ## Лицензии
 Движок — Space Design Studio. `scripts/importers/max_lib/import_max.py` — GPL-2.0-or-later (проект io_scene_max).
 Шрифт Inter — SIL OFL 1.1 (`assets/fonts/OFL.txt`).
+
+## Дом агента в облаке (Railway)
+
+Репозиторий — это и плагин Claude, и веб-сервис. `Dockerfile` + `railway.toml` разворачивают `server/app.py`:
+страница с загрузкой исходника (.max, DWG/DXF, PDF, фото, project.json, .zip) → альбом PDF/DXF, отчёт и
+project.json; очередь сборок (по одной: сцена 3ds Max берёт до ~8 ГБ памяти); результаты — на томе `/data`;
+`/plugin` — скачать плагин этой версии. Переменные: `ACCESS_TOKEN` (пароль страницы, логин любой), `DATA_DIR`.

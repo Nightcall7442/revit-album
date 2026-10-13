@@ -276,3 +276,68 @@ def test_a_smooth_round_base_keeps_its_outline(tmp_path):
     L = m.edges(np.array([0.0, -1.0, 0.0]))
     vertical = [e for e in L if abs(e[0][2] - e[1][2]) > 600]
     assert len(vertical) >= 2                                      # the left and right outline of the cylinder
+
+
+def _rack_with_garbage():
+    """Two shelf plates and one big oblique face from the front of the lower shelf to the back of the upper one (a
+    stream of an unevaluated topology), every index valid: nothing marks the part as unsound in advance."""
+    v, f = _box(-900, -220, 0, 900, 220, 5)
+    v2, f2 = _box(-900, -220, 600, 900, 220, 605)
+    v = np.vstack([v, v2])
+    f = f + [[i + 8 for i in x] for x in f2]
+    f.append([0, 1, 14, 15])
+    posts = []
+    for x in (-880, 860):
+        pv, pf = _box(x, -220, 0, x + 20, -200, 605)
+        posts.append(dict(name="post", v=pv, f=pf))
+    return dict(parts=[dict(name="shelves001", v=v, f=f)] + posts)
+
+
+def test_render_self_check_heals_a_face_across_the_piece(tmp_path):
+    """Lesson L-088: the views are checked before they go on the sheet; a big oblique face across the piece marks
+    its part as unsound, the part is cleaned and the view drawn again."""
+    from sdalbum import items3d
+    m = items3d.ItemMesh(_rack_with_garbage())
+    info = m.view("front", str(tmp_path / "f.png"), px_per_mm=0.3)
+    assert info["healed"] == ["shelves001"] and not info["issues"]
+    assert [0, 1, 14, 15] not in m.parts[0].f
+    assert len(m.parts[1].f) == 6                                   # the posts are untouched
+
+
+def test_render_self_check_leaves_sound_pieces_alone(tmp_path):
+    from sdalbum import items3d
+    back = (np.array([(-250, 0, 450), (250, 0, 450), (250, 120, 900), (-250, 120, 900)], float), [[0, 1, 2, 3]])
+    seat = _box(-250, -250, 400, 250, 250, 450)
+    cone = _cyl(0, 0, 200, 0, 400, n=48)
+    m = items3d.ItemMesh(dict(parts=[dict(name=n, v=vf[0], f=vf[1]) for n, vf in
+                                     (("back", back), ("seat", seat), ("base", cone))]))
+    for kind in ("front", "left", "top"):
+        info = m.view(kind, str(tmp_path / ("%s.png" % kind)), px_per_mm=0.4)
+        assert not info["healed"] and not info["issues"], (kind, info["issues"])
+
+
+def test_render_self_check_reports_an_empty_view(tmp_path):
+    from sdalbum import items3d
+    v = np.array([(0, 0, 0), (1000, 0, 0), (1000, 400, 700), (0, 400, 700)], float)       # one face, all garbage
+    m = items3d.ItemMesh(dict(parts=[dict(name="x", v=v, f=[[0, 1, 2, 3]], unsound=True)]))
+    info = m.view("front", str(tmp_path / "f.png"), px_per_mm=0.3)
+    assert any(code == "RENDER_EMPTY" for code, msg in info["issues"])
+
+
+def test_sheet_build_records_the_self_check(tmp_path):
+    """The self-check runs once per item before its thumbnail and views; a cleaned part is recorded in the build."""
+    from sdalbum import items3d, sheets_items
+
+    class A_:
+        issues = []
+        cur_title = "x"
+
+        class P:
+            base_dir = str(tmp_path)
+    data = _rack_with_garbage()
+    fn = tmp_path / "rack.pkl"
+    pickle.dump(data, open(fn, "wb"))
+    A = A_()
+    m = sheets_items._mesh(A, dict(id="r", pos="М-1", name="Стеллаж", mesh=str(fn)))
+    assert m is not None and m.checked[0] == ["shelves001"]
+    assert [i["code"] for i in A.issues] == ["RENDER_HEALED"]

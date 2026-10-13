@@ -133,18 +133,9 @@ class Part:
         nv = len(self.v)
         raw = [list(map(int, f)) for f in d.get("f") or [] if len(f) >= 3]
         self.f = [f for f in raw if max(f) < nv and min(f) >= 0]
-        self.unsound = len(self.f) < len(raw)
+        self.unsound = len(self.f) < len(raw) or bool(d.get("unsound"))
         if self.unsound and self.f:
-            # faces point past the vertex list: the topology was edited by modifiers that are not evaluated, and its
-            # big oblique faces (one shelf to another) cut across the piece - lesson L-087
-            ext = np.array([np.ptp(self.v[f], axis=0) for f in self.f])
-            srt = np.sort(ext, axis=1)
-            keep = ~((srt[:, 0] > 20.0) & (srt[:, 1] > 200.0))
-            typ = np.percentile(ext, 95, axis=0)          # a face far longer along an axis than the part's faces are
-            keep &= ~np.any(ext > np.maximum(5.0 * typ, typ + 100.0), axis=1)
-            _, area = _normals(self.v, self.f)             # a sliver from corner to corner of a plate
-            keep &= ~((srt[:, 1] > 200.0) & (area < 0.08 * srt[:, 1] * srt[:, 2]))
-            self.f = [f for f, k in zip(self.f, keep) if k]
+            self.clean_unsound()
         if len(self.f) > 500:                  # faces of a broken stream span the whole object: drop them
             tri = np.array([f[:3] for f in self.f], int)
             e = np.max(np.linalg.norm(self.v[tri] - self.v[np.roll(tri, 1, axis=1)], axis=2), axis=1)
@@ -159,6 +150,25 @@ class Part:
             if self.fam:
                 break
 
+    def clean_unsound(self):
+        """Faces point past the vertex list (or the render self-check found a face across the piece): the topology
+        was edited by modifiers that are not evaluated; its big oblique faces (one shelf to another), faces far
+        longer along an axis than the part's faces are and slivers from corner to corner of a plate are dropped -
+        lessons L-087, L-088."""
+        self.unsound = True
+        if not self.f:
+            return
+        ext = np.array([np.ptp(self.v[f], axis=0) for f in self.f])
+        srt = np.sort(ext, axis=1)
+        keep = ~((srt[:, 0] > 20.0) & (srt[:, 1] > 200.0))
+        typ = np.percentile(ext, 95, axis=0)
+        keep &= ~np.any(ext > np.maximum(5.0 * typ, typ + 100.0), axis=1)
+        _, area = _normals(self.v, self.f)
+        keep &= ~((srt[:, 1] > 200.0) & (area < 0.08 * srt[:, 1] * srt[:, 2]))
+        self.f = [f for f, k in zip(self.f, keep) if k]
+        if hasattr(self, "_adj"):
+            del self._adj
+
     def smooth(self, budget=60000):
         if not any(re.search(r"(?i)turbosmooth|meshsmooth", m) for m in self.mods) or not self.f:
             return
@@ -171,7 +181,7 @@ class Part:
 class ItemMesh:
     def __init__(self, data, size=None):
         self.parts = [Part(p) for p in data["parts"]]
-        self.parts = [p for p in self.parts if p.f and len(p.v)]
+        self.parts = [p for p in self.parts if len(p.v) and (p.f or p.unsound)]     # a cleaned-out part keeps its place
         for p in self.parts:
             p.smooth()
         body = [p for p in self.parts if not p.prop] or self.parts
@@ -224,12 +234,13 @@ class ItemMesh:
         cache[key] = out
         return out
 
-    def edges(self, view, props=False, crease=35.0):
-        """Visible-candidate feature edges for a view direction (unit vector towards the camera)."""
-        out = []
+    def edges(self, view, props=False, crease=35.0, owners=False):
+        """Visible-candidate feature edges for a view direction (unit vector towards the camera); owners=True also
+        returns the part index of every segment."""
+        out, own = [], []
         cosc = math.cos(math.radians(crease))
         for p in self.parts:
-            if p.prop and not props:
+            if (p.prop and not props) or not p.f:
                 continue
             if not hasattr(p, "_adj"):
                 n, _ = _normals(p.v, p.f)
@@ -260,7 +271,11 @@ class ItemMesh:
                 m &= ~((ln > 300.0) & (ext[:, 1] > 0.02 * ln))     # a long edge off the axes
             if m.any():
                 out.append(np.stack([p.v[E[m, 0]], p.v[E[m, 1]]], axis=1))
-        return np.concatenate(out) if out else np.zeros((0, 2, 3))
+                own.append(np.full(int(m.sum()), self.parts.index(p)))
+        L = np.concatenate(out) if out else np.zeros((0, 2, 3))
+        if owners:
+            return L, (np.concatenate(own) if own else np.zeros(0, int))
+        return L
 
     # -------------------------------------------------- views
     VIEWS = {"front": (0.0, -90.0), "left": (0.0, 180.0), "top": (90.0, -90.0)}
@@ -272,7 +287,70 @@ class ItemMesh:
         xs, ys = P @ r, P @ u
         return float(xs.min()), float(xs.max()), float(ys.min()), float(ys.max())
 
+    def audit(self, kind):
+        """Render self-check of a view (lesson L-088): a face that cuts across the piece - big in both directions of
+        the view, oblique to the axes and not facing the viewer - or a line from corner to corner of the view.
+        -> (part indices to heal, [(code, message)])"""
+        el, az = self.VIEWS[kind]
+        v, r, u = raster3d._basis(el, az)
+        x0, x1, y0, y1 = self.extent(kind)
+        Wv, Hv = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
+        bad, msgs = set(), []
+        for pi, p in enumerate(self.parts):
+            if p.prop or not p.f:
+                continue
+            n, area = _normals(p.v, p.f)
+            size = np.maximum(np.array(self.size, float), 1.0)
+            for fi, f in enumerate(p.f):
+                e = np.ptp(p.v[f], axis=0)
+                # across the piece: more than half of it in all three directions, oblique to the axes (a sloped back
+                # spans the width and the height but not the depth)
+                if (e > 0.5 * size).all() and np.max(np.abs(n[fi])) < 0.97:
+                    bad.add(pi)
+                    msgs.append(("RENDER_GARBAGE", "«%s»: грань через всё изделие (%s)" % (p.name, kind)))
+                    break
+        L, own = self.edges(v, owners=True)
+        if len(L):
+            a, b = L[:, 0], L[:, 1]
+            dx, dy = np.abs((a - b) @ r), np.abs((a - b) @ u)
+            hit = (dx > 0.6 * Wv) & (dy > 0.6 * Hv) & (np.hypot(dx, dy) > 300.0)
+            for pi in sorted(set(own[hit].tolist())):
+                bad.add(pi)
+                msgs.append(("RENDER_GARBAGE", "«%s»: линия из угла в угол вида (%s)" % (self.parts[pi].name, kind)))
+        return sorted(bad), msgs
+
+    def selfcheck(self):
+        """All three views checked before anything is drawn (thumbnails, general view): parts with a face or a line
+        across the piece are cleaned once. -> (healed part names, remaining [(code, message)])"""
+        healed, rest = [], []
+        for kind in ("front", "left", "top"):
+            bad, _ = self.audit(kind)
+            fresh = [i for i in bad if self.parts[i].name not in healed]
+            if fresh:
+                healed += [self.parts[i].name for i in fresh]
+                self.heal(fresh)
+        for kind in ("front", "left", "top"):
+            rest += self.audit(kind)[1]
+        if not any(p.f for p in self.parts if not p.prop):
+            rest.append(("RENDER_EMPTY", "у изделия не осталось граней"))
+        self.checked = (healed, rest)
+        return healed, rest
+
+    def heal(self, idx):
+        for i in idx:
+            self.parts[i].clean_unsound()
+        self.__dict__.pop("_tcache", None)
+
     def view(self, kind, png, px_per_mm=0.4, info=None):
+        inf = {} if info is None else info
+        healed, issues = [], []
+        bad, msgs = self.audit(kind)
+        fresh = [i for i in bad if not self.parts[i].unsound or i not in healed]
+        if fresh:
+            healed = [self.parts[i].name for i in fresh]
+            self.heal(fresh)
+            bad, msgs = self.audit(kind)
+        issues += msgs
         el, az = self.VIEWS[kind]
         v, r, u = raster3d._basis(el, az)
         T, C, _ = self.tris(props=False, colour=False)
@@ -281,9 +359,16 @@ class ItemMesh:
         ext = (x0 - pad, x1 + pad, y0 - pad, y1 + pad)
         L = self.edges(v)
         width = max(60, int((ext[1] - ext[0]) * px_per_mm))
-        inf = {} if info is None else info
-        raster3d.render_painter(T, C, png, elev=el, azim=az, width=width, ss=2, margin=0.0, lines=L, crop=False,
-                             shade=(0.88, 1.0), edge_rgb=(25, 25, 28), edge_px=2.0, info=inf, extent=ext)
+        if len(T):
+            raster3d.render_painter(T, C, png, elev=el, azim=az, width=width, ss=2, margin=0.0, lines=L, crop=False,
+                                    shade=(0.88, 1.0), edge_rgb=(25, 25, 28), edge_px=2.0, info=inf, extent=ext)
+        else:
+            from PIL import Image
+            Image.new("RGB", (width, max(20, int((ext[3] - ext[2]) * px_per_mm))), "white").save(png)
+            inf.update(x0=ext[0], x1=ext[1], y0=ext[2], y1=ext[3], px_per_mm=px_per_mm, basis=(v, r, u))
+        if _ink(png) < 0.002:
+            issues.append(("RENDER_EMPTY", "пустой вид (%s): у изделия не осталось граней" % kind))
+        inf["healed"], inf["issues"] = healed, issues
         return inf
 
     def axo(self, png, width=900, elev=24.0, azim=-62.0, info=None):
@@ -410,6 +495,13 @@ def profile_mesh(it):
         f = [list(range(n - 1, -1, -1)), list(range(n, 2 * n))] + [[i, (i + 1) % n, n + (i + 1) % n, n + i] for i in range(n)]
         parts.append(dict(name=b.get("name", "блок"), mats=[b.get("mat", "")], v=np.array(v, np.float32), f=f, mods=[]))
     return dict(parts=parts)
+
+
+def _ink(png):
+    """Share of the image that is not background."""
+    from PIL import Image
+    a = np.asarray(Image.open(png).convert("L"), float)
+    return float((a < 235).mean()) if a.size else 0.0
 
 
 def load(P, it):

@@ -59,6 +59,15 @@ def _mesh(A, it):
         except Exception as ex:
             A.issues.append(dict(code="ITEM_MESH", level="warning", sheet=A.cur_title, msg="%s: %s" % (it.get("pos"), ex)))
             cache[key] = None
+        m = cache[key]
+        if m is not None:                     # render self-check before any view of it is drawn (lesson L-088)
+            healed, rest = m.selfcheck()
+            where = "Мебель. %s (самопроверка видов)" % it.get("pos")
+            if healed:
+                A.issues.append(dict(code="RENDER_HEALED", level="info", sheet=where,
+                                     msg="%s: убраны грани невычисленной топологии сцены у %s" % (it.get("pos"), ", ".join(healed))))
+            for code, msg in rest:
+                A.issues.append(dict(code=code, level="error", sheet=where, msg="%s %s: %s" % (it.get("pos"), it.get("name"), msg)))
     return cache[key]
 
 
