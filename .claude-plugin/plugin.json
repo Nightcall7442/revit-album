@@ -1,0 +1,8 @@
+{
+  "name": "space-design-album",
+  "version": "1.0.0",
+  "description": "Агент «главный архитектор»: альбом дизайн-проекта интерьера (рабочие чертежи A3 в стиле Space Design Studio) из 3ds Max / DWG / DXF / PDF обмера, с автоматической проверкой наложений и данных, тестами, базой опыта и экспортом в Revit.",
+  "author": {"name": "Space Design Studio"},
+  "keywords": ["interior design", "дизайн-проект", "рабочие чертежи", "3ds max", "dwg", "dxf", "revit", "альбом"],
+  "license": "Proprietary (движок); GPL-2.0-or-later (scripts/importers/max_lib); OFL-1.1 (шрифт Inter)"
+}
