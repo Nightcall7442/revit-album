@@ -286,6 +286,47 @@ def footprint(it, place, m=None):
     return affinity.translate(g, x, y)
 
 
+WALL_BACKED = ("sofa", "bench", "shelving", "bookshelf", "records")
+
+
+def _settle(it, P):
+    """Where a piece really stands (lesson L-089): within 15° of a wall direction it is parallel to the walls (the
+    angle of a cage bent by unevaluated modifiers is noise, designers do not put a sofa at 13°); a sofa, bench or
+    shelving stands with its back against the wall it is at (gap or overlap up to 800 / 300 mm closed)."""
+    from shapely.geometry import Polygon
+    from shapely import affinity
+    W, D = it["size"][0], it["size"][1]
+    out = []
+    for place in it.get("places", []):
+        x, y, ang = place[0], place[1], (place[2] if len(place) > 2 else 0)
+        near = round(ang / 90.0) * 90.0
+        dev = (ang - near + 180.0) % 360.0 - 180.0
+        if 0 < abs(dev) <= 15.0 and it.get("kind") not in ("chair", "armchair"):
+            ang = int(near) % 360
+        if it.get("kind") in WALL_BACKED and P.mass is not None and not P.mass.is_empty:
+            a = math.radians(ang)
+            bx, by = -math.sin(a), math.cos(a)                       # local +y (the back) in the world
+            base = Polygon(it["foot"]) if it.get("foot") and len(it["foot"]) >= 3 else \
+                Polygon([(-W / 2, -D / 2), (W / 2, -D / 2), (W / 2, D / 2), (-W / 2, D / 2)])
+            g0 = affinity.translate(affinity.rotate(base, ang, origin=(0, 0)), x, y)
+
+            def free(s):
+                return affinity.translate(g0, bx * s, by * s).intersection(P.mass).area < 2000.0
+            if it.get("columns") or g0.intersection(P.mass).area > 0.03 * g0.area:
+                out.append([round(x), round(y), ang] + list(place[3:]))
+                continue                              # built around a column / into the wall: it stays where it is
+            best = None
+            for s_ in range(-300, 805, 5):
+                if free(s_) and not free(s_ + 5):
+                    if best is None or abs(s_) < abs(best):
+                        best = s_
+            if best is not None and best != 0 and free(best):
+                x, y = x + bx * best, y + by * best
+        out.append([round(x), round(y), ang] + list(place[3:]))
+    it["places"] = out
+    return it
+
+
 def _simple(g):
     """A polygon with holes (a shelving around a column) -> one simple ring cut by a thin slot to the outside."""
     from shapely.geometry import LineString, Polygon, box
@@ -359,6 +400,9 @@ def decide(d, base):
                 mm = None
             if mm is not None:
                 it["foot"] = local_footprint(mm)
+    for it in made:
+        if it.get("places"):
+            _settle(it, P)
     # positions: by room, then by type
     made.sort(key=lambda it: (min([order.get(r, 99) for r in it.get("rooms") or []] or [99]),
                               KIND_ORDER.index(it.get("kind")) if it.get("kind") in KIND_ORDER else 99,

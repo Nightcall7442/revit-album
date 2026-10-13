@@ -341,3 +341,30 @@ def test_sheet_build_records_the_self_check(tmp_path):
     m = sheets_items._mesh(A, dict(id="r", pos="М-1", name="Стеллаж", mesh=str(fn)))
     assert m is not None and m.checked[0] == ["shelves001"]
     assert [i["code"] for i in A.issues] == ["RENDER_HEALED"]
+
+
+def test_furniture_stands_parallel_to_the_wall_and_against_it(tmp_path):
+    """Lesson L-089: the roll sofa of the cafe stood at 13° on the plan - its sections are bent by FFD modifiers
+    that are not evaluated, the angle came from the bent cage. A piece within 15° of a wall direction is turned
+    parallel to it; a sofa / bench / shelving is moved back to the wall it stands at."""
+    from sdalbum import items as IT, model as M
+    d = _project(tmp_path)
+    P = M.Project(d, str(tmp_path))
+    it = dict(kind="sofa", size=[3000, 900, 700], places=[[5000, 7400, 13]])
+    IT._settle(it, P)
+    x, y, ang = it["places"][0]
+    assert ang == 0
+    assert abs((y + 450) - 8000) <= 10                       # back face on the wall face y = 8000
+    turned = dict(kind="armchair", size=[650, 650, 750], places=[[3000, 3000, 37]])
+    IT._settle(turned, P)
+    assert turned["places"][0][2] == 37                      # a chair turned on purpose keeps its angle
+
+
+def test_a_shelving_around_a_column_is_not_moved_off_it(tmp_path):
+    from sdalbum import items as IT, model as M
+    d = _project(tmp_path)
+    d["walls"].append(dict(id="C1", kind="existing", rect=[2800, 2800, 3200, 3200]))
+    P = M.Project(d, str(tmp_path))
+    it = dict(kind="shelving", size=[1800, 600, 2600], places=[[3000, 3000, 0]], columns=[[-200, -200, 200, 200]])
+    IT._settle(it, P)
+    assert it["places"][0][:2] == [3000, 3000]
