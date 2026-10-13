@@ -18,6 +18,13 @@
   python3 sda.py propose project.json [--dry] [--only lighting,sockets]
                                                 design proposal by norms for EMPTY sections (light, switches,
                                                 sockets, plumbing, panel, groups, floors, ceilings, finishes)
+  python3 sda.py find project.json 'sockets[room=Спальня]'      list items (selector syntax: sdalbum/editor.py)
+  python3 sda.py edit project.json "set sockets[room=Спальня,note~кровать] h=700" "move switches[id=В3] 0 -300"
+                  [-m "описание"]                edit with journal; shows what the change broke / fixed
+  python3 sda.py undo project.json [N]           undo the last N changes
+  python3 sda.py history project.json            journal of changes
+  python3 sda.py diff old.json new.json | diff project.json --since N
+                                                changes in words + sheets they touch (for the client)
   python3 sda.py test                            full test-suite (must be green before delivery)
 """
 import json
@@ -153,13 +160,107 @@ def cmd_propose(args):
     return 1 if any(i["level"] == "error" for i in rest) else 0
 
 
+def cmd_find(args):
+    from sdalbum import editor, history, model
+    path = args[0]
+    d = history.load(path)
+    P = editor._project(d, os.path.dirname(os.path.abspath(path)))
+    sel = args[1] if len(args) > 1 else "rooms"
+    try:
+        sec, items = editor.select(d, sel, P)
+    except editor.EditError as ex:
+        print("ОШИБКА:", ex)
+        return 2
+    full = editor._container(d, sec)
+    idx = {id(it): i + 1 for i, it in enumerate(full)} if isinstance(full, list) else {}
+    for key, it in items:
+        tag = ("#%d" % idx[id(it)]) if id(it) in idx else (str(key) if key is not None else "")
+        print("%s%s  %s" % (sec, tag, editor.describe(sec, it, P)))
+    print("найдено: %d" % len(items))
+    return 0
+
+
+def cmd_edit(args):
+    from sdalbum import editor, history, model, validate
+    path = args[0]
+    msg = _opt(args, "-m")
+    ops = [a for i, a in enumerate(args[1:], 1) if a != "-m" and args[i - 1] != "-m"]
+    base = os.path.dirname(os.path.abspath(path))
+    d = history.load(path)
+    try:
+        d2, msgs = editor.apply(d, ops, base)
+    except editor.EditError as ex:
+        print("ОШИБКА:", ex)
+        return 2
+    for m in msgs:
+        print("  * " + m)
+    try:
+        before = {(i["code"], i["msg"]) for i in validate.run(model.Project(d, base))}
+    except Exception:
+        before = set()
+    try:
+        after_l = validate.run(model.Project(d2, base))
+    except Exception as ex:
+        print("ОШИБКА: после правки проект не собирается (%s) - правка не сохранена" % ex)
+        return 2
+    after = {(i["code"], i["msg"]) for i in after_l}
+    for c, m in sorted(after - before):
+        print("  ! новое замечание [%s] %s" % (c, m))
+    for c, m in sorted(before - after):
+        print("  ✓ снято [%s] %s" % (c, m))
+    n = history.save(path, d2, msg or "; ".join(msgs)[:300], ops)
+    print("сохранено (правка %d; откат: sda.py undo %s)" % (n, path))
+    return 1 if any(i["level"] == "error" for i in after_l) else 0
+
+
+def cmd_undo(args):
+    from sdalbum import history
+    steps = int(args[1]) if len(args) > 1 else 1
+    undone = history.undo(args[0], steps)
+    if not undone:
+        print("журнал пуст - откатывать нечего")
+        return 1
+    for e in undone:
+        print("откат правки %d: %s" % (e["n"], e["msg"]))
+    return 0
+
+
+def cmd_history(args):
+    from sdalbum import history
+    ent = history.entries(args[0])
+    if not ent:
+        print("журнал пуст")
+    for e in ent:
+        print("%3d  %s  %s" % (e["n"], e["time"], e["msg"]))
+    return 0
+
+
+def cmd_diff(args):
+    from sdalbum import editor, history
+    if "--since" in args:
+        path = args[0]
+        n = int(_opt(args, "--since"))
+        a = history.snapshot_before(path, n)
+        if a is None:
+            print("в журнале нет правки %d" % n)
+            return 1
+        b = history.load(path)
+    else:
+        path = args[1]
+        a, b = history.load(args[0]), history.load(args[1])
+    ch, sheets = editor.diff(a, b, os.path.dirname(os.path.abspath(path)))
+    editor.print_diff(ch, sheets)
+    return 0
+
+
 def cmd_test(args):
     return subprocess.call([sys.executable, "-m", "pytest", "-q", os.path.join(HERE, "tests")] + args)
 
 
 CMDS = {"doctor": cmd_doctor, "validate": cmd_validate, "build": cmd_build, "qa": cmd_qa, "revit": cmd_revit,
         "import-max": cmd_import_max, "import-dxf": cmd_import_dxf, "test": cmd_test, "fix": cmd_fix,
-        "propose": cmd_propose}
+        "propose": cmd_propose, "find": cmd_find, "edit": cmd_edit, "undo": cmd_undo, "history": cmd_history,
+        "diff": cmd_diff}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:
