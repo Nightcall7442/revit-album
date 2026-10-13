@@ -249,13 +249,16 @@ def grid_lines(sp, shp, step_x, step_y, origin=(0.0, 0.0), rgb=C_GRAY, layer="SD
 
 
 def dim(sp, p1, p2, base, style, vertical=False, location=None, text_override=None):
+    """A linear dimension; text_override replaces the measured text (paper-space views: the real size)."""
     d = sp.add_linear_dim(base=base, p1=p1, p2=p2, angle=90 if vertical else 0, dimstyle=style, location=location,
                           text=text_override if text_override else "<>", dxfattribs={"layer": "SD_Размеры"})
     d.render()
     return d
 
 
-def chain(sp, values, line_pos, ext_from, style="SD50", vertical=False, small=None, custom=None, scale=50.0):
+def chain(sp, values, line_pos, ext_from, style="SD50", vertical=False, small=None, custom=None, scale=50.0, mult=None):
+    """A chain of dimensions; small segments get their text moved aside. mult: paper-space chain of a view at 1:mult -
+    the texts are the real sizes (paper length × mult)."""
     vals = sorted(set(round(v, 2) for v in values))
     n = len(vals) - 1
     th = 1.9 * scale
@@ -269,7 +272,8 @@ def chain(sp, values, line_pos, ext_from, style="SD50", vertical=False, small=No
         else:
             p1, p2, base = (a, ext_from), (b, ext_from), (a, line_pos)
         loc = None
-        tw = len("%d" % round(b - a)) * th * 0.62
+        txt = "%d" % round((b - a) * mult) if mult else None
+        tw = len(txt or "%d" % round(b - a)) * th * 0.62
         lift = 0.6 * scale + th / 2.0
         mode = custom.get(i)
         if mode is None and b - a < small:
@@ -292,7 +296,7 @@ def chain(sp, values, line_pos, ext_from, style="SD50", vertical=False, small=No
                 if mode == "other":
                     l2 = -lift
                 loc = (line_pos - l2, along) if vertical else (along, line_pos + l2)
-        dim(sp, p1, p2, base, style, vertical=vertical, location=loc)
+        dim(sp, p1, p2, base, style, vertical=vertical, location=loc, text_override=txt)
 
 
 # ---------------------------------------------------------------- sheet furniture
@@ -322,7 +326,14 @@ def stamp(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info):
         img.rgb = (254, 254, 254)
     text(psp, info["object"], (xa + 2.5, y1 - 4.3), 2.4, "MIDDLE_LEFT", "SD_Штамп")
     text(psp, info["place"], (xa + 2.5, y0 + 13.2), 2.4, "MIDDLE_LEFT", "SD_Штамп")
-    text(psp, title, (xa + 2.5, y0 + 4.5), 3.2, "MIDDLE_LEFT", "SD_Штамп", bold=True)
+    ht = 3.2
+    while tw(title, ht, True) > xb - xa - 5.0 and ht > 2.0:     # a long sheet title shrinks to its field
+        ht -= 0.1
+    if tw(title, ht, True) > xb - xa - 5.0:
+        while title and tw(title + "…", ht, True) > xb - xa - 5.0:
+            title = title[:-1]
+        title = title.rstrip() + "…"
+    text(psp, title, (xa + 2.5, y0 + 4.5), ht, "MIDDLE_LEFT", "SD_Штамп", bold=True)
     text(psp, "Стадия", (xb + 2, y1 - 3.0), 1.7, "MIDDLE_LEFT", "SD_Штамп", rgb=(110, 110, 110))
     text(psp, info.get("stage", "Рабочий проект"), (xb + 2, y1 - 8.5), 2.3, "MIDDLE_LEFT", "SD_Штамп")
     text(psp, "Масштаб", (xb + 2, y0 + 10.5), 1.7, "MIDDLE_LEFT", "SD_Штамп", rgb=(110, 110, 110))

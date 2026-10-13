@@ -647,7 +647,9 @@ def furniture(A, no, title, scale):
             occ.add(gg, "mark")
     room_tags(A, sp, occ)
     col = Column(A, psp)
-    rows = [[str(g["pos"]), g["name"], g["size"], str(len(g["items"])), g["room"]] for g in groups]
+    rows = [[str(g["pos"]), g["name"] + ("" if not any(f.get("item") for f in g["items"]) else
+                                         " (эскиз %s)" % next(f["item"] for f in g["items"] if f.get("item"))),
+             g["size"], str(len(g["items"])), g["room"]] for g in groups]
     col.table([9, 41, 21, 8, 30], ["Поз.", "Наименование", "Габариты, мм", "Кол.", "Помещение"], rows,
               title="Спецификация мебели и оборудования", h=1.6, aligns=["C", "L", "C", "C", "L"], zebra=True, head_h=6.0)
     col.notes(A.note_lines("furniture", [

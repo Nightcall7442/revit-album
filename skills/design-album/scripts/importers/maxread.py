@@ -307,16 +307,54 @@ def iter_nodes():
             yield ch
 
 
-def mat_name(mat):
-    if mat is None:
-        return None
+def _chunk_name(ch, depth=0):
+    """Material / map name: chunk 0x4001 (directly or nested up to 3 levels)."""
     try:
-        n = mat.get_first(0x4001)
-        if n is not None and isinstance(n.data, str):
+        n = ch.get_first(0x4001)
+        if n is not None and isinstance(n.data, str) and n.data:
             return n.data
     except Exception:
         pass
-    return cls_name(mat)
+    if depth < 3:
+        for c in getattr(ch, "children", None) or []:
+            r = _chunk_name(c, depth + 1)
+            if r:
+                return r
+    return None
+
+
+def mat_name(mat):
+    if mat is None:
+        return None
+    return (_chunk_name(mat) or cls_name(mat) or "").strip() or None
+
+
+def mat_names(mat):
+    """[material name, sub-material names...] (Multi/Sub-Object), class name of a light material kept as a hint."""
+    if mat is None:
+        return []
+    out = []
+    n = mat_name(mat)
+    if n:
+        out.append(n)
+    if "Light" in (cls_name(mat) or ""):
+        out.append("LightMtl")
+    try:
+        refs = M.get_references(mat) or []
+    except Exception:
+        refs = []
+    for r in refs[:40]:
+        if r is None:
+            continue
+        c = cls_name(r) or ""
+        if not re.search(r"Mtl|Material|Multi", c):
+            continue
+        s = _chunk_name(r)
+        if s and s not in out:
+            out.append(s)
+        if "Light" in c and "LightMtl" not in out:
+            out.append("LightMtl")
+    return out
 
 
 def layer_name(lyr):

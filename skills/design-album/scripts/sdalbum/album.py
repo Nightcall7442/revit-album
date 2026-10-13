@@ -23,10 +23,10 @@ SHEET_TITLES = {
     "partitions": "План монтажа перегородок", "furniture": "План расстановки мебели", "floors": "План полов",
     "ceilings": "План потолков", "lighting": "План освещения", "sockets": "План розеток и электровыводов",
     "plumbing": "План сантехники", "finishes": "План отделки стен", "openings": "Ведомость заполнения проёмов",
-    "windows": "Окна и витражи",
+    "windows": "Окна и витражи", "items": "Мебель индивидуального изготовления",
 }
 DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "furniture", "floors", "ceilings", "lighting",
-                 "sockets", "plumbing", "finishes", "elevations", "openings", "windows"]
+                 "sockets", "plumbing", "finishes", "elevations", "openings", "windows", "items"]
 
 
 class Column:
@@ -164,6 +164,12 @@ class Album:
         for key in self.sheet_keys:
             if key == "elevations":
                 for title, scale, fn, arg in SD.elevation_sheets(self):
+                    n += 1
+                    self.sheets.append((n, key, title, scale, fn, arg))
+                continue
+            if key == "items":
+                from . import sheets_items as SI
+                for title, scale, fn, arg in SI.item_sheets(self):
                     n += 1
                     self.sheets.append((n, key, title, scale, fn, arg))
                 continue

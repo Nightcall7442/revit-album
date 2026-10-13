@@ -13,6 +13,7 @@ import os
 import shutil
 import time
 
+KEEP_ON_REIMPORT = ("item_overrides", "overrides", "notes")
 IMAGES = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".heic", ".webp")
 ORDER = (".json", ".max", ".dxf", ".dwg", ".pdf") + IMAGES
 
@@ -111,6 +112,10 @@ def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=
         if not os.path.isfile(proj):
             history.save(proj, d, "исходные данные: %s" % os.path.basename(src))
         elif h != last:                      # the source changed: re-import (the old working copy stays in the journal)
+            old = history.load(proj)
+            for key in KEEP_ON_REIMPORT:         # the designer's own data is not the source's: it stays
+                if old.get(key) and not d.get(key):
+                    d[key] = old[key]
             history.save(proj, d, "исходные данные обновлены: %s" % os.path.basename(src))
             rep["notes"].append("исходник изменился - рабочая копия обновлена (прежняя - в журнале, sda.py undo)")
         else:                                # same source: keep the working copy with the user's edits
@@ -216,8 +221,16 @@ def _hash(d):
 
 
 def _copy_assets(d, base, out):
-    """Relative logo paths of the input project keep working from OUT."""
+    """Relative logo paths and the meshes of the furniture items keep working from OUT."""
     meta = d.get("meta", {})
+    for it in d.get("items") or []:
+        p = it.get("mesh")
+        if p and not os.path.isabs(p):
+            src = os.path.join(base, p)
+            dst = os.path.join(out, p)
+            if os.path.isfile(src) and os.path.abspath(src) != os.path.abspath(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy(src, dst)
     for k in ("logo", "logo_transparent"):
         p = meta.get(k)
         if p and not os.path.isabs(p) and os.path.isfile(os.path.join(base, p)):

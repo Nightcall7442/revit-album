@@ -214,6 +214,8 @@ def shift_extras(d, dx, dy):
     for k in ("_lights", "_equipment"):
         for it in d.get(k, []):
             it["rect"] = rect(it["rect"])
+    for it in d.get("items", []):                 # furniture items of the scene: their places on the plan
+        it["places"] = [[p[0] + dx, p[1] + dy] + list(p[2:]) for p in it.get("places", [])]
 
 
 def _wall_centres(shell, tmin=150, tmax=700, lmin=1500):

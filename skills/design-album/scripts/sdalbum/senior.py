@@ -70,6 +70,12 @@ def decide(data, base_dir="."):
     _service_rooms(d, base_dir, log, public)
     if is_catering(d):
         _hot_water(d, base_dir, log)
+    if d.get("items"):                       # furniture of the scene -> production sketches, the plan gets them
+        from . import items as IT
+        try:
+            log += IT.decide(d, base_dir)
+        except Exception as ex:              # the album is built without the sketches, the report says why
+            log.append(dict(topic="Мебель", msg="эскизы мебели не собраны: %r" % (ex,)))
     _overlaps(d, base_dir, log)
     notes = d.setdefault("meta", {}).setdefault("decisions", [])
     for e in log:                            # the album gets the decision; the reason stays in report.md

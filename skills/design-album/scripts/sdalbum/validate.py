@@ -230,6 +230,10 @@ def _furniture(P):
             ka, kb = fa.get("kind"), fb.get("kind")
             if "rug" in (ka, kb) or (ka, kb) in STACKABLE or (kb, ka) in STACKABLE:
                 continue
+            za = fa.get("z") or [0, fa.get("h", 900)]
+            zb = fb.get("z") or [0, fb.get("h", 900)]
+            if za[0] >= zb[1] - 20 or zb[0] >= za[1] - 20:
+                continue                        # one hangs above the other (a shelf over a sofa)
             ov = ga.intersection(gb).area
             if ov > 0.002e6:                    # 2000 mm² - two wardrobes overlapping by 47 mm must be caught
                 out.append(I("FURN_OVERLAP", "warning", "«%s» и «%s» пересекаются (%.2f м²)" % (fa["name"], fb["name"], ov / 1e6),

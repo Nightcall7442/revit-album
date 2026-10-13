@@ -143,8 +143,20 @@ def client_questions(A):
 def general(A, no, title, scale):
     P = A.P
     psp = A.make_sheet(no, title, scale, "Состав альбома, общие указания, экспликация помещений")
-    rows = [["%02d" % n, t, s or "-"] for n, k, t, s, fn, arg in A.sheets]
-    yb = S.table(psp, 24, 256, [12, 120, 40], ["Лист", "Наименование", "Масштаб"], rows, h=1.8, aligns=["C", "L", "C"],
+    rows = []
+    sk = [x for x in A.sheets if x[1] == "items" and x[2].startswith("Мебель. ")]
+    for n, k, t, s, fn, arg in A.sheets:
+        if sk and (n, k, t) == sk[0][:3]:          # the sketches of furniture: one line for all of them
+            ks = sorted({int(x[3].split(":")[1]) for x in sk if ":" in str(x[3])})
+            sc = ("1:%d" % ks[0]) if len(ks) == 1 else ("1:%d–1:%d" % (ks[0], ks[-1]) if ks else "-")
+            first, last = sk[0][2].split(" — ")[0].replace("Мебель. ", ""), sk[-1][2].split(" — ")[0].replace("Мебель. ", "")
+            rows.append(["%02d–%02d" % (sk[0][0], sk[-1][0]) if len(sk) > 1 else "%02d" % n,
+                         "Мебель. Эскизы изделий %s…%s" % (first, last) if len(sk) > 1 else t, sc])
+            continue
+        if sk and any(n == x[0] for x in sk):
+            continue
+        rows.append(["%02d" % n, t, s or "-"])
+    yb = S.table(psp, 24, 256, [14, 118, 40], ["Лист", "Наименование", "Масштаб"], rows, h=1.8, aligns=["C", "L", "C"],
                  title="Ведомость листов", head_h=6.0, zebra=True)
     notes = A.note_lines("general", [
         "Дизайн-проект разработан по исходным данным заказчика (3D-модель / чертежи / обмер).",

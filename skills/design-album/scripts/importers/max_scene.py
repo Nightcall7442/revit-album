@@ -168,6 +168,10 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         cls = R.cls_name(base) if base is not None else None
         row = dict(idx=node.number, name=name, cls=cls, mods=R.modifiers(msh) if msh is not None else [],
                    material=R.mat_name(mat), layer=R.layer_name(lyr))
+        try:
+            row["materials"] = R.mat_names(mat)
+        except Exception:
+            row["materials"] = [row["material"]] if row["material"] else []
         row["class"] = cls
         try:
             par = R.M.get_node_parent(node)
@@ -238,7 +242,8 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         _plot(rows, sec[key], os.path.join(out, "plan_%s.png" % key), "%s: z = %.0f мм" % (key, sec[key]["h"]))
     _summary(rows, u, H, sec, os.path.join(out, "inventory.md"), path)
     slab = H * k if H and H * k > 2000 else None      # wall height of the scene = floor-to-slab
-    _draft(rows, os.path.join(out, "draft_project.json"), ceil, slab)
+    d = _draft(rows, os.path.join(out, "draft_project.json"), ceil, slab)
+    _items(rows, meshes, k, d, out)
     print("units:", u, "(guess from storey %s)" % (round(H, 1) if H else "-") if not units else "")
     print("nodes:", len(rows), " meshes:", len(meshes), " ->", out)
 
@@ -336,6 +341,23 @@ def _draft(rows, path, ceil, slab=None):
     objs = scene_objects(rows)
     d, shell = scene_draft.build(objs, ceil, path, png=os.path.join(os.path.dirname(path), "draft_plan.png"), slab=slab)
     return d
+
+
+def _items(rows, meshes, k, d, out):
+    """Furniture / decor items with their meshes (sheets «Мебель индивидуального изготовления»)."""
+    from importers import scene_items
+    try:
+        items, signs = scene_items.collect(rows, meshes, k, d, out)
+    except Exception as ex:                  # the album is still built without the items
+        print("items: не собраны (%r)" % (ex,))
+        return
+    p = os.path.join(out, "draft_project.json")
+    dd = json.load(open(p, encoding="utf-8"))
+    dd["items"] = items
+    if signs:
+        dd["_signs"] = signs
+    json.dump(dd, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    print("items:", len(items), "types,", sum(i["qty"] for i in items), "pcs")
 
 
 if __name__ == "__main__":
