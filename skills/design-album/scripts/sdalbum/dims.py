@@ -78,6 +78,10 @@ def chain(sp, values, line_pos, ext_from, k, occ=None, vertical=False, merge=1.0
                 cands.append(before)
             if i != n - 1:
                 cands.append(after)
+            # crowded: one more step out on both sides and a third row (better than on a wall or another text)
+            step = w + 1.2 * k
+            cands += [(before[0] - step, before[1]), (after[0] + step, after[1]),
+                      (mid, line_pos + side * (lift + th * 3.75)), (before[0], up1[1]), (after[0], up1[1])]
             cands.append((mid, line_pos + side * lift))
         best = None
         for along, across in cands:

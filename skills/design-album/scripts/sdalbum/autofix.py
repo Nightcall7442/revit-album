@@ -66,6 +66,7 @@ def fix(data, base_dir="."):
         P = _P(d, base_dir)
         _on_wall(d, P, log)
         P = _P(d, base_dir)
+        _furniture_rooms(d, P, log)
         _hot_left(d, P, log)
         _multipoint(d, log)
         _wet_sockets(d, P, log)
@@ -173,9 +174,11 @@ def _auto_grid(d, base_dir, log):
     P0 = _P(dict(d, rooms=[]), base_dir)
     xs, ys = _wall_centres(P0.shell)
     def cluster(vals):
+        # walls closer than 450 mm (a lining, an offset run of the same wall) share one axis: two bubbles 200 mm
+        # apart on a 1:100 plan sit on top of each other (lesson L-064)
         out = []
         for v, L_ in sorted(vals):
-            if out and abs(v - out[-1][0]) <= 100:
+            if out and abs(v - out[-1][0]) <= 450:
                 c, LL = out[-1]
                 out[-1] = ((c * LL + v * L_) / (LL + L_), LL + L_)
             else:
@@ -239,11 +242,76 @@ def _auto_rooms(d, base_dir, log):
     inner = outer.difference(mass)
     pieces = [g for g in (inner.geoms if hasattr(inner, "geoms") else [inner]) if g.area > 1.0e6]
     pieces.sort(key=lambda g: (-g.centroid.y, g.centroid.x))
+    names = _names_by_contents(d, pieces)
+    seen = {}
     for i, g in enumerate(pieces, 1):
         c = polylabel(g, 10)
-        d["rooms"].append(dict(num=str(i), name="Помещение %d" % i, seed=[T.snap(c.x), T.snap(c.y)], auto=True))
+        nm, cls = names[i - 1] if names[i - 1] else ("Помещение %d" % i, None)
+        if names[i - 1]:
+            seen[nm] = seen.get(nm, 0) + 1
+            if seen[nm] > 1:
+                nm = "%s %d" % (nm, seen[nm])
+        r = dict(num=str(i), name=nm, seed=[T.snap(c.x), T.snap(c.y)], auto=True)
+        if cls:
+            r["cls"] = cls
+        d["rooms"].append(r)
     if pieces:
-        L(log, "ROOMS_AUTO", "помещения найдены по контуру стен: %d (названия - уточнить)" % len(pieces), len(pieces))
+        named = sum(1 for n in names if n)
+        L(log, "ROOMS_AUTO", "помещения найдены по контуру стен: %d%s" % (
+            len(pieces), ", названы по содержимому: %d (проверить)" % named if named else " (названия - уточнить)"), len(pieces))
+
+
+ROOM_BY_CONTENT = [   # (name, class, pattern of object / furniture names, weight)
+    ("Санузел", "wet", r"toilet|унитаз|\bwc\b|urinal|писсуар|bidet|биде", 5),
+    ("Ванная", "wet", r"bath\s*tub|bathtub|ванн", 4),
+    ("Душевая", "wet", r"shower|душ", 3),
+    ("Постирочная", "wet", r"washing machine|washer|стирал|dryer|сушил", 3),
+    ("Кухня", "kitchen", r"fridge|refriger|холодил|hicold|freezer|oven|духов|stove|плит|\bhob\b|hood|вытяж|dishwash|посудом|"
+                         r"fryer|grill|gastro|мойк|\bsink\b", 2),
+    ("Бар", "kitchen", r"bar\s*counter|coffee\s*machine|кофемаш|espresso|barista", 3),
+    ("Спальня", "living", r"\bbed\b|кроват", 5),
+    ("Гардеробная", "storage", r"wardrobe|гардероб|closet", 2),
+    ("Зал", "living", r"chair|стул|stool|табурет|table|стол|sofa|диван|armchair|кресл|banquette", 1),
+]
+
+
+def _names_by_contents(d, pieces):
+    """Rooms of a 3D scene / CAD drawing without names: named by what stands in them (toilet -> «Санузел», fridges and
+    stoves -> «Кухня», many seats -> «Зал», bed -> «Спальня»). -> [(name, cls) | None] per piece (lesson L-063)."""
+    from shapely.geometry import Point as _Pt
+    objs = [(str(n), x, y) for n, x, y in d.get("_objects", [])]
+    for f in d.get("furniture", []):
+        xs = [p[0] for p in f.get("poly", [])]
+        ys = [p[1] for p in f.get("poly", [])]
+        if xs:
+            objs.append(("%s %s" % (f.get("kind", ""), f.get("name", "")), sum(xs) / len(xs), sum(ys) / len(ys)))
+    pats = [(nm, cls, re.compile(rx, re.I), w) for nm, cls, rx, w in ROOM_BY_CONTENT]
+    out = []
+    for g in pieces:
+        score = {}
+        seats = 0
+        zone = g.buffer(50)
+        for n, x, y in objs:
+            if not zone.contains(_Pt(x, y)):
+                continue
+            for nm, cls, rx, w in pats:
+                if rx.search(n):
+                    score[(nm, cls)] = score.get((nm, cls), 0) + w
+                    if nm == "Зал":
+                        seats += 1
+                    break
+        if not score:
+            out.append(None)
+            continue
+        (nm, cls), sc = max(score.items(), key=lambda kv: kv[1])
+        if sc < 2:
+            out.append(None)
+            continue
+        if nm == "Зал" and seats < 8:
+            nm = "Гостиная" if any(re.search(r"sofa|диван|\btv\b", n, re.I) for n, x, y in objs
+                                   if zone.contains(_Pt(x, y))) else "Комната"
+        out.append((nm, cls))
+    return out
 
 
 def _leaf(w, steel):
@@ -512,6 +580,47 @@ def _on_wall(d, P, log):
         L(log, "WALL_SIDE", "сторона установки исправлена по нормали стены (%d шт.)" % n_side, n_side)
 
 
+def _furniture_rooms(d, P, log):
+    """Furniture without a room (taken from a 3D scene) gets the room it stands in; outside every room -> dropped."""
+    n, drop = 0, []
+    for f in d.get("furniture", []):
+        if f.get("room") and f["room"] in P.room_by_name:
+            continue
+        try:
+            c = Polygon(f["poly"]).representative_point()
+        except Exception:
+            continue
+        r = P.room_of_point((c.x, c.y), 200)
+        if r is None:
+            drop.append(f)
+            continue
+        f["room"] = r["name"]
+        n += 1
+    for f in drop:
+        d["furniture"].remove(f)
+    if n or drop:
+        L(log, "FURN_ROOM", "мебель привязана к помещениям: %d%s" % (n, ", вне помещений удалено: %d" % len(drop) if drop else ""), n)
+    # footprints taken from a 3D scene (check=true) are bounding boxes: one sticking into a wall or the next room is
+    # trimmed to its room (a designer's own furniture is never touched - it becomes a question instead)
+    k = 0
+    for f in d.get("furniture", []):
+        if not f.get("check") or f.get("room") not in P.room_by_name:
+            continue
+        g = Polygon(f["poly"]).buffer(0)
+        rs = P.room_by_name[f["room"]]["shp"]
+        part = g.intersection(rs)
+        if g.area <= 0 or part.is_empty or g.difference(rs).area <= 0.01 * g.area:
+            continue
+        if part.area < 0.5 * g.area:
+            continue
+        x0, y0, x1, y1 = part.bounds
+        x0, y0, x1, y1 = T.snap(x0), T.snap(y0), T.snap(x1), T.snap(y1)
+        f["poly"] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        k += 1
+    if k:
+        L(log, "FURN_TRIM", "габариты мебели из 3D-сцены обрезаны по помещению (заходили в стену): %d" % k, k)
+
+
 def _hot_left(d, P, log):
     n = 0
     by = {}
@@ -620,9 +729,13 @@ def questions(d, P, rest):
         if o.get("check"):
             out.append("%s: тип и ширина %d определены автоматически по разрыву стены - проверить по исходнику" % (o["id"], o["w"]))
     auto = [r["name"] for r in d.get("rooms", []) if r.get("auto")]
-    if auto:
-        out.append("помещения %s найдены по контуру стен - назвать их (кухня, санузел, прихожая, спальня...): от этого "
-                   "зависят отделка, свет, розетки" % ", ".join("«%s»" % n for n in auto))
+    unnamed = [n for n in auto if n.startswith("Помещение")]
+    named = [n for n in auto if not n.startswith("Помещение")]
+    if named:
+        out.append("помещения %s названы по тому, что в них стоит в исходнике - проверить назначение" % ", ".join("«%s»" % n for n in named))
+    if unnamed:
+        out.append("помещения %s - назначение не определено (кухня, склад, кабинет...?): от него зависят отделка, свет, "
+                   "розетки" % ", ".join("«%s»" % n for n in unnamed))
     lv = d.get("levels", {})
     if d.get("_todo") or d.get("_draft"):
         out.append("высота потолка %d и плиты %d приняты по умолчанию - уточнить замером" % (lv.get("ceiling", 0), lv.get("slab", 0)))

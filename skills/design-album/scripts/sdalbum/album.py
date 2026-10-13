@@ -16,6 +16,7 @@ COL_TOP = 258.0
 COL_BOTTOM = 36.0
 PLAN_AREA = (22.0, 40.0, 300.0, 262.0)      # x0, y0, x1, y1 on the sheet for plan viewports
 SCALES = (50, 75, 100)
+HEALABLE = ("LINE_THROUGH_TEXT", "TEXT_ON_WALL", "TEXT_OVERLAP")
 
 SHEET_TITLES = {
     "cover": "Обложка", "letter": "Обращение к заказчику", "general": "Общие данные", "measured": "Обмерный план",
@@ -296,7 +297,7 @@ class Album:
     def _heal(self, sheet, rounds=2):
         no = sheet[0]
         issues = self._sheet_qa(no)
-        if not any(i["code"] == "LINE_THROUGH_TEXT" for i in issues):
+        if not any(i["code"] in HEALABLE for i in issues):
             return
         best = (self._score(issues), {}, issues)
         hints = {}
@@ -312,7 +313,7 @@ class Album:
             sc = self._score(issues)
             if sc < best[0]:
                 best = (sc, {k_: list(v) for k_, v in hints.items()}, issues)
-            if not any(i["code"] == "LINE_THROUGH_TEXT" for i in issues):
+            if not any(i["code"] in HEALABLE for i in issues):
                 break
         if self._score(issues) != best[0]:          # the last round was not the best one: draw the best again
             self._drop_sheet(no)
@@ -320,12 +321,23 @@ class Album:
         self.healed[no] = dict(score=best[0], hints=sum(len(v) for v in best[1].values()))
 
     def _hints(self, no, issues):
-        """Lines crossing texts (paper mm) -> obstacles in the coordinates of the block shown in that viewport."""
-        from shapely.geometry import LineString, Point
+        """Lines crossing texts, walls under texts, texts on texts (paper mm) -> obstacles in the coordinates of the
+        block shown in that viewport (the text then takes another place on the next drawing)."""
+        from shapely.geometry import LineString, Point, box as _box
         title = self._title_of(no)
         vps = [v for v in self._vps if v[2] == title]
         out = {}
         for i in issues:
+            if i["code"] in ("TEXT_ON_WALL", "TEXT_OVERLAP") and i.get("bbox"):
+                x0, y0, x1, y1 = i["bbox"]
+                m = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+                for off, win, t, rect, k in vps:
+                    if rect[0] <= m[0] <= rect[2] and rect[1] <= m[1] <= rect[3]:
+                        loc = _box(win[0] + (x0 - rect[0]) * k, win[1] + (y0 - rect[1]) * k,
+                                   win[0] + (x1 - rect[0]) * k, win[1] + (y1 - rect[1]) * k)
+                        out.setdefault(off, []).append(loc)
+                        break
+                continue
             if i["code"] != "LINE_THROUGH_TEXT":
                 continue
             for cs in i.get("cross", []):

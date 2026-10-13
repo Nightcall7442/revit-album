@@ -112,10 +112,10 @@ def place_text(sp, occ, s, candidates, h, align="MIDDLE_CENTER", rot=0.0, bold=F
         r = c[2] if len(c) > 2 and c[2] is not None else rot
         al = c[3] if len(c) > 3 and c[3] else align
         g = text_geom(s, p, h, al, r, bold, pad)
+        score = occ.overlap(g, ignore)
         if within is not None and not within.contains(g):
-            score = 1e9 + g.difference(within).area
-        else:
-            score = occ.overlap(g, ignore)
+            # outside the wanted region is bad, but overlapping another text is worse: never trade one for the other
+            score += 1e6 + 100.0 * g.difference(within).area
         if score <= 1e-6:
             best = (0, p, r, al, g)
             break

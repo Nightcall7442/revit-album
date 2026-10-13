@@ -105,7 +105,40 @@ def section(v, faces, h):
 
 
 def guess_units(rows):
-    """Storey height from tall architectural objects -> unit. Falls back to 'mm'."""
+    """System unit of the scene (3ds Max files do not say it reliably) by voting of known sizes: door height
+    1.9-2.7 m, toilet length 0.55-0.8 m, chair height 0.7-1.15 m, bed length 1.9-2.3 m, simple tall wall boxes
+    2.4-9 m. The old guess by the 90th percentile of object heights took a cm scene for inches (lesson L-062).
+    -> (unit, storey height in scene units or None)"""
+    import re
+    from collections import Counter
+    cues = []
+    walls = []
+    for r in rows:
+        if not r.get("bbox") or r["class"] in SKIP_CLASSES:
+            continue
+        (x0, y0, z0), (x1, y1, z1) = r["bbox"]
+        h, L, W = z1 - z0, max(x1 - x0, y1 - y0), min(x1 - x0, y1 - y0)
+        n = (r.get("name") or "").lower()
+        if re.search(r"door|двер", n) and "handle" not in n and "ручк" not in n:
+            cues.append((h, 1900, 2700, 3))
+        if re.search(r"toilet|унитаз", n) and not re.search(r"paper|brush|seat|cover|accessor|ерш", n):
+            cues.append((L, 550, 800, 3))
+        if re.search(r"chair|стул", n) and not re.search(r"leg|ножк|seat", n):
+            cues.append((h, 700, 1150, 1))
+        if re.search(r"\bbed\b|кроват", n):
+            cues.append((L, 1900, 2300, 2))
+        if (r.get("nverts") or 99) <= 64 and W > 0 and L > 4 * W:
+            walls.append(h)
+            cues.append((h, 2400, 9000, 1))
+    votes = Counter()
+    for u, k in UNIT_MM.items():
+        for v, lo, hi, w in cues:
+            if lo <= v * k <= hi:
+                votes[u] += w
+    if votes:
+        u, n = votes.most_common(1)[0]
+        H = float(np.percentile(walls, 90)) if walls else None
+        return u, H
     hs = []
     for r in rows:
         if r.get("bbox") and r["class"] not in SKIP_CLASSES:
@@ -187,6 +220,8 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
     cuts = {"floor": floor + 250.0, "cut": floor + cut, "ceiling": None}
     tops = [r["bbox"][1][2] for r in rows if r.get("bbox") and r["class"] not in SKIP_CLASSES]
     ceil = float(np.percentile(tops, 95)) - 60 if tops else floor + 2700
+    if H:                                       # storey from the simple wall boxes (the unit vote) is more reliable
+        ceil = min(ceil, H * k - 60) if H * k > 2000 else ceil
     cuts["ceiling"] = ceil
     sec = {}
     for key, h in cuts.items():
@@ -272,33 +307,34 @@ def _summary(rows, u, H, sec, md, path):
     open(md, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 
 
-def _draft(rows, path, ceil):
-    """Wall candidates: tall thin Boxes and vertical-ish meshes; everything marked 'check'."""
-    walls = []
-    n = 0
+def scene_objects(rows):
+    """Inventory rows (mm) -> objects for scene_draft: plan rect, z range, flat primitive flag."""
+    out = []
     for r in rows:
-        b = r.get("bbox")
-        fp = r.get("footprint")
-        if fp and r["class"] == "Box" and abs(r.get("z1", 0) - r.get("z0", 0)) > 2000:
-            xs, ys = [p[0] for p in fp], [p[1] for p in fp]
-            x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
-        elif b and (b[1][2] - b[0][2]) > 2000:
-            x0, y0, x1, y1 = b[0][0], b[0][1], b[1][0], b[1][1]
+        if r["class"] in SKIP_CLASSES:
+            continue
+        if r.get("bbox"):
+            (x0, y0, z0), (x1, y1, z1) = r["bbox"]
+            flat = False
+        elif r.get("footprint"):
+            xs = [p[0] for p in r["footprint"]]
+            ys = [p[1] for p in r["footprint"]]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
+            z0, z1 = r.get("z0", 0.0), r.get("z1", 0.0)
+            flat = r["class"] == "Plane" or abs(z1 - z0) < 1
         else:
             continue
-        t = min(x1 - x0, y1 - y0)
-        if not 60 <= t <= 700 or max(x1 - x0, y1 - y0) < 3 * t:
-            continue
-        n += 1
-        walls.append(dict(id="W%d" % n, kind="existing", rect=[round(x0), round(y0), round(x1), round(y1)],
-                          source=r["name"], check=True))
-    d = dict(meta=dict(title="ДИЗАЙН-ПРОЕКТ|ИНТЕРЬЕРА", studio="Space Design Studio", stage="Дизайн-проект"),
-             levels=dict(floor=0, ceiling=int(round(ceil / 10.0) * 10), slab=int(round((ceil + 400) / 10.0) * 10)),
-             grid=dict(x=[], y=[]), walls=walls, openings=[], rooms=[], furniture=[], lighting=[], switches=[],
-             sockets=[], plumbing=[], floors=[], ceilings=dict(types=[], zones=[]), elevations=[], nodes=[],
-             _todo=["проверить стены (check=true) по plan_cut.png", "добавить проёмы, помещения (seed), мебель",
-                    "оси: grid.x / grid.y по центрам несущих стен", "запустить: sda.py validate"])
-    json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        out.append(dict(name=r.get("name") or "", parent=r.get("parent"), cls=r["class"], nverts=r.get("nverts"),
+                        rect=(x0, y0, x1, y1), z0=z0, z1=z1, flat=flat, mods=r.get("mods") or []))
+    return out
+
+
+def _draft(rows, path, ceil):
+    """Walls, openings (doors / glazing in wall gaps), furniture by object names, named objects for room naming."""
+    from importers import scene_draft
+    objs = scene_objects(rows)
+    d, shell = scene_draft.build(objs, ceil, path, png=os.path.join(os.path.dirname(path), "draft_plan.png"))
+    return d
 
 
 if __name__ == "__main__":

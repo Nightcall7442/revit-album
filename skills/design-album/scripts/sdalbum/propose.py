@@ -25,6 +25,7 @@ Rules (references/drawing-standards.md):
 """
 import copy
 import math
+import re
 
 from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
@@ -40,6 +41,8 @@ BLOCK_WALL = ("wardrobe", "kitchen_base", "fridge", "shower", "bath", "wc", "bas
               "cabinet", "shoe_cabinet", "tv_stand", "armchair", "nightstand")
 NO_LIGHT_ABOVE = ("wardrobe", "kitchen_upper", "fridge", "cabinet")
 LIGHT_SPEC = {"spot": "Светильник встраиваемый поворотный, GU10, 7 Вт, 3000 K",
+              "spot2": "Светильник встраиваемый двойной карданный, 2×GU10, 2×7 Вт, 3000 K",
+              "spot2_ip44": "Светильник встраиваемый двойной IP44, 2×GU10",
               "spot_ip44": "Светильник встраиваемый влагозащищённый IP44, GU10, 7 Вт",
               "pendant": "Светильник подвесной над столом",
               "led": "Светодиодная лента 24 В, 9,6 Вт/м, в профиле"}
@@ -302,8 +305,10 @@ def _lighting(d, P, log):
     for r in P.rooms:
         cls = r.get("cls", "living")
         E = LUX.get(cls, 150)
-        n = max(MIN_SPOTS.get(cls, 2), int(math.ceil(E * r["area_exact"] * KZ / (FLUX * ETA))))
-        kind = "spot_ip44" if cls == "wet" else "spot"
+        big = r["area_exact"] > 30.0          # a hall: double cardan fixtures (~1000 lm), not a forest of GU10 spots
+        flux = FLUX * (2 if big else 1)
+        n = max(MIN_SPOTS.get(cls, 2), int(math.ceil(E * r["area_exact"] * KZ / (flux * ETA))))
+        kind = ("spot2_ip44" if big else "spot_ip44") if cls == "wet" else ("spot2" if big else "spot")
         region = r["shp"].buffer(-300, join_style=2)
         if region.is_empty or region.area < 0.05e6:
             region = r["shp"].buffer(-120, join_style=2)
@@ -322,7 +327,8 @@ def _lighting(d, P, log):
         for g in tables:
             c = g.centroid
             out.append(dict(kind="pendant", x=T.snap(c.x), y=T.snap(c.y), group=r["name"], proposed=True))
-            extra.append("подвес над столом")
+        if tables:
+            extra.append("подвес над столом" if len(tables) == 1 else "подвесы над столами ×%d" % len(tables))
         for f, g in T.furniture_shapes(P, ("kitchen_upper",)):
             if _room_of(P, f, g) is not r:
                 continue
@@ -340,7 +346,8 @@ def _lighting(d, P, log):
             out.append(dict(kind="led", x=T.snap(a[0]), y=T.snap(a[1]), x2=T.snap(b[0]), y2=T.snap(b[1]), group=r["name"],
                             proposed=True))
             extra.append("LED рабочей зоны")
-        summary.append("%s %d шт. (%d лк)%s" % (r["name"], len(pts), E, (" + " + ", ".join(extra)) if extra else ""))
+        summary.append("%s %d шт.%s (%d лк)%s" % (r["name"], len(pts), " двойных" if big else "", E,
+                                                   (" + " + ", ".join(extra)) if extra else ""))
     d["lighting"] = out
     spec = d.setdefault("lighting_spec", {})
     for o in out:
@@ -799,8 +806,10 @@ def _panel(d, P, log):
         return
     _, q, nn = best
     q = (_r(q[0]), T.snap(q[1])) if abs(nn[0]) > 0.5 else (T.snap(q[0]), _r(q[1]))
-    d["panel"] = dict(name="ЩК", x=q[0], y=q[1], w=300, wall=T.normal_code(nn), bottom=1500, proposed=True)
-    L(log, "щит", "щит квартирный ЩК у входа, низ +1,500", 1)
+    flat = bool(re.search(r"квартир|дом", d.get("meta", {}).get("object", "квартиры"), re.I))
+    name = "ЩК" if flat else "ЩР"
+    d["panel"] = dict(name=name, x=q[0], y=q[1], w=300 if flat else 500, wall=T.normal_code(nn), bottom=1500, proposed=True)
+    L(log, "щит", "%s у входа, низ +1,500" % ("щит квартирный ЩК" if flat else "щит распределительный ЩР"), 1)
 
 
 def _circuits(d, P, log):

@@ -155,9 +155,20 @@ def tag_near(A, sp, occ, s, p, h=1.9, dists=(0.0, 4.0, 7.0, 10.0, 14.0), bold=Fa
 
 
 def label_near(A, sp, occ, s, p, h=1.9, dists=(2.5, 4.0, 6.0, 8.5), rot=0.0, bold=False, rgb=None, mask=True, n=16):
+    """Label next to a point; when every near place is taken (a crowded corner of a 1:100 plan) the label goes
+    further out with a thin leader instead of lying on a wall or another text (lesson L-066)."""
     k = A.plan_k
     c = [(p[0], p[1])] + ring_candidates(p, [d * k for d in dists], n)
-    return place_text(sp, occ, s, c, h * k, "MIDDLE_CENTER", rot, bold, rgb, mask=mask)
+    res = place_text(sp, occ, s, c, h * k, "MIDDLE_CENTER", rot, bold, rgb, mask=mask, force=False)
+    if res is not None:
+        return res
+    far = ring_candidates(p, [d * k for d in (max(dists) + 3.5, max(dists) + 7.0, max(dists) + 11.0, max(dists) + 16.0)], 24)
+    res = place_text(sp, occ, s, c + far, h * k, "MIDDLE_CENTER", rot, bold, rgb, mask=mask)
+    if res and math.hypot(res[0][0] - p[0], res[0][1] - p[1]) > (max(dists) + 1.0) * k:
+        q = res[1].exterior.interpolate(res[1].exterior.project(Point(p)))
+        S.line(sp, (q.x, q.y), p, "SD_Тонкие", (90, 90, 90), 9)
+        occ.add(LineString([(q.x, q.y), p]).buffer(0.2 * k), "leader")
+    return res
 
 
 # ------------------------------------------------------------------ 04 measured plan
@@ -1166,7 +1177,9 @@ def sockets(A, no, title, scale):
              "БРА": "Вывод для бра / подсветки", "ВЫВ": "Кабельный вывод"}
     items = [(_lg_socket(kd), names.get(kd, kd)) for kd in kinds]
     if P.panel:
-        items.append((_lg_fill((40, 40, 40), (40, 40, 40), w=4, h=4), "Щит квартирный"))
+        items.append((_lg_fill((40, 40, 40), (40, 40, 40), w=4, h=4),
+                      {"ЩК": "Щит квартирный", "ЩР": "Щит распределительный", "ЩО": "Щит освещения"}.get(
+                          P.panel.get("name", "ЩК"), "Щит %s" % P.panel.get("name", ""))))
     col.legend(items, rh=5.2)
     if P.circuits:
         col.table([9, 27, 27, 46], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits, title="Групповые линии (рекомендуемая схема ЩК)",

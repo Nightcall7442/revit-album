@@ -102,6 +102,8 @@ def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=
     base = os.path.dirname(os.path.abspath(draft))
     if os.path.abspath(draft) != os.path.abspath(proj):
         d = history.load(draft)
+        if kind == "draft":
+            _name_from_source(d, src)
         _copy_assets(d, base, out)
         h = _hash(d)
         mark = os.path.join(out, ".sda_input.json")
@@ -163,6 +165,42 @@ def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=
     say("Готово: листов %d, ошибок %d, предупреждений %d (%d с). Отчёт: %s" % (
         len(rep["sheets"]), e, w, rep["seconds"], os.path.join(out, "report.md")))
     return rep
+
+
+OBJECT_TYPES = [   # (pattern in the file name, genitive for «интерьера ...», capitals for the cover)
+    (r"cafeteria|cafe|caf\u00e9|coffee|кафе|кофейн|столов", "кафе"),
+    (r"restaurant|ресторан", "ресторана"),
+    (r"office|офис", "офиса"),
+    (r"shop|store|boutique|магазин|бутик", "магазина"),
+    (r"salon|салон|beauty|barber", "салона"),
+    (r"hotel|отел|гостиниц", "отеля"),
+    (r"clinic|клиник|dental|стомат", "клиники"),
+    (r"house|villa|cottage|дом|коттедж|вилл", "дома"),
+    (r"apartment|flat|квартир|kvartir", "квартиры"),
+]
+
+
+def _name_from_source(d, src):
+    """A draft has no object name: take it from the file name - 'sherov cafeteria.max' -> «Дизайн-проект интерьера
+    кафе «Sherov»», not «квартиры» (lesson L-065)."""
+    import re
+    meta = d.setdefault("meta", {})
+    if meta.get("object"):
+        return
+    stem = re.sub(r"[_\-.]+", " ", os.path.splitext(os.path.basename(src))[0]).strip()
+    typ, rest = None, stem
+    for rx, gen in OBJECT_TYPES:
+        m = re.search(r"\w*(?:%s)\w*" % rx, stem, re.I)          # the whole word: «Kvartira», not «kvartir» + «a»
+        if m:
+            typ = gen
+            rest = (stem[:m.start()] + " " + stem[m.end():]).strip()
+            break
+    rest = re.sub(r"(?i)\b(plan|план|scene|сцена|final|draft|project|проект|last|all|new|copy|копия|v\d+|\d{4})\b", " ", rest)
+    rest = re.sub(r"\s+", " ", rest).strip()
+    name = " ".join(w[:1].upper() + w[1:] for w in rest.split()) if rest and not rest.isdigit() else ""
+    typ = typ or "квартиры"
+    meta["object"] = "Дизайн-проект интерьера %s%s" % (typ, " «%s»" % name if name else "")
+    meta["title"] = "ДИЗАЙН-ПРОЕКТ|ИНТЕРЬЕРА %s" % typ.upper()
 
 
 def _hash(d):

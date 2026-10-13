@@ -205,7 +205,8 @@ def check_layout(doc, layout, framed=True):
             inter = t["geom"].intersection(u["geom"]).area
             if inter > 0.04:
                 issues.append(dict(code="TEXT_OVERLAP", level="error", where=_c(t["bbox"]),
-                                   msg="«%s» перекрывает «%s»" % (_s(t["content"]), _s(u["content"]))))
+                                   msg="«%s» перекрывает «%s»" % (_s(t["content"]), _s(u["content"])),
+                                   bbox=[round(v, 2) for v in t["bbox"]]))
     # --- dark text on dark fills (walls)
     dark = [f for f in rec.fills if _lum(f[1]) < 0.45 and f[0].area > 0.5]
     if dark:
@@ -225,7 +226,8 @@ def check_layout(doc, layout, framed=True):
                 a += part.area
             if a > 0.25 * t["geom"].area:
                 issues.append(dict(code="TEXT_ON_WALL", level="error", where=_c(t["bbox"]),
-                                   msg="«%s» лежит на тёмной заливке (стена)" % _s(t["content"])))
+                                   msg="«%s» лежит на тёмной заливке (стена)" % _s(t["content"]),
+                                   bbox=[round(v, 2) for v in t["bbox"]]))
     if framed:
         st = box(*STAMP)
         fr = box(*FRAME)

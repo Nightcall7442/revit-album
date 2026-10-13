@@ -155,3 +155,85 @@ def test_gap_kind_by_what_is_drawn():
     assert _gap_kind(g, True, [], True, 1000) == "window"
     assert _gap_kind(box(0, 0, 1800, 300), True, [], False, 1800) == "passage"
     assert _gap_kind(g, True, [], False, 1000) == "door"
+
+
+def test_scene_units_voted_by_known_sizes():
+    """A cm scene whose 90th-percentile object height looked like inches (lesson L-062): doors 208, toilet 54,
+    walls 300 -> cm."""
+    from importers.max_scene import guess_units
+    rows = [dict(name="Glass_Door_21_001", **{"class": "Editable Poly"}, bbox=[[0, 0, 0], [94, 14, 208]], nverts=17000),
+            dict(name="toilet 1", **{"class": "Editable Poly"}, bbox=[[0, 0, 6], [35, 54, 41]], nverts=2700),
+            dict(name="Plane010", **{"class": "Editable Poly"}, bbox=[[0, 0, 0], [23, 560, 300]], nverts=12)]
+    rows += [dict(name="Bar_Table_%d" % i, **{"class": "Editable Poly"}, bbox=[[0, 0, 0], [40, 40, 122]], nverts=600)
+             for i in range(30)]
+    assert guess_units(rows)[0] == "cm"
+
+
+def _obj(name, rect, z0=0, z1=3000, cls="Editable Poly", nverts=12, parent="Group001", flat=False, mods=()):
+    return dict(name=name, parent=parent, cls=cls, nverts=nverts, rect=rect, z0=z0, z1=z1, flat=flat, mods=list(mods))
+
+
+def test_wall_in_parts_around_a_window_is_one_wall_with_a_window():
+    from importers.scene_draft import stack_walls, wall_candidates
+    parts = [_obj("low", (0, 0, 1000, 120), 0, 1000, parent=None, nverts=8),
+             _obj("high", (0, 110, 1000, 230), 1300, 3000, parent=None, nverts=8)]
+    walls, _ = wall_candidates(parts)
+    assert len(walls) == 1
+    assert walls[0]["window_band"] == (1000, 1300) and walls[0]["rect"] == (0, 0, 1000, 230)
+
+
+def _box_room(tmp_path, extra):
+    """6 x 4 m room: three walls as simple boxes of the shell group + `extra` objects."""
+    objs = [_obj("Plane1", (-200, -200, 6200, 0)), _obj("Plane2", (-200, 0, 0, 4000)), _obj("Plane3", (6000, 0, 6200, 4000))]
+    from importers import scene_draft
+    p = str(tmp_path / "draft.json")
+    d, shell = scene_draft.build(objs + extra, 2900, p)
+    return d
+
+
+def test_shop_front_closes_the_room(tmp_path):
+    from sdalbum import autofix, model
+    front = _obj("3 016", (-200, 4000, 6200, 4080), 0, 3000, parent=None, nverts=50000)
+    d = _box_room(tmp_path, [front])
+    kinds = [(o["kind"], o["w"], o.get("note")) for o in d["openings"]]
+    assert ("window", 6200, "витраж") in kinds
+    d2, log, rest, qs = autofix.fix(d, str(tmp_path))
+    assert len(model.Project(d2, str(tmp_path)).rooms) == 1
+
+
+def test_rooms_named_by_what_stands_in_them(tmp_path):
+    from sdalbum import autofix
+    objs = [_obj("Plane1", (-200, -200, 9200, 0)), _obj("Plane2", (-200, 0, 0, 4000)), _obj("Plane3", (9000, 0, 9200, 4000)),
+            _obj("Plane4", (-200, 4000, 9200, 4200)), _obj("Plane5", (3000, 0, 3200, 4000))]
+    stuff = [_obj("toilet 1", (500, 500, 900, 1200), 150, 1000, nverts=2000, parent="g1"),
+             _obj("Washbasin", (1500, 3500, 2100, 3950), 800, 1000, nverts=2000, parent="g2")]
+    stuff += [_obj("Bess chair %d" % i, (3500 + 600 * i, 1000, 3950 + 600 * i, 1450), 0, 850, nverts=3000, parent="c%d" % i)
+              for i in range(9)]
+    from importers import scene_draft
+    d, shell = scene_draft.build(objs + stuff, 2900, str(tmp_path / "d.json"))
+    d2, log, rest, qs = autofix.fix(d, str(tmp_path))
+    names = sorted((r["name"], r.get("cls")) for r in d2["rooms"])
+    assert names == [("Зал", "living"), ("Санузел", "wet")]
+    assert any("названы по тому, что в них стоит" in q for q in qs)
+
+
+def test_object_name_from_file_name():
+    from sdalbum.pipeline import _name_from_source
+    for f, exp in (("sherov cafeteria.max", "Дизайн-проект интерьера кафе «Sherov»"),
+                   ("Kvartira_Urgench.dxf", "Дизайн-проект интерьера квартиры «Urgench»"),
+                   ("last all.max", "Дизайн-проект интерьера квартиры")):
+        d = {}
+        _name_from_source(d, f)
+        assert d["meta"]["object"] == exp
+
+
+def test_close_walls_share_one_axis(tmp_path):
+    """Two wall runs 215 mm apart gave axes 1 and 2 with overlapping bubbles (lesson L-064)."""
+    from sdalbum import autofix
+    d = dict(_todo=["x"], walls=[dict(id="A", kind="existing", rect=[-200, 0, 0, 4000]),
+                                 dict(id="B", kind="existing", rect=[15, 4000, 215, 8000]),
+                                 dict(id="C", kind="existing", rect=[6000, 0, 6200, 8000]),
+                                 dict(id="D", kind="existing", rect=[-200, -200, 6200, 0]),
+                                 dict(id="E", kind="existing", rect=[-200, 8000, 6200, 8200])], rooms=[], openings=[])
+    d2, log, rest, qs = autofix.fix(d, str(tmp_path))
+    assert len(d2["grid"]["x"]) == 2

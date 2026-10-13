@@ -2,6 +2,7 @@
 """Cover, letter to the client, general data sheet."""
 import math
 import os
+import re
 from PIL import Image
 from shapely.geometry import Polygon, Point, box
 
@@ -212,4 +213,7 @@ def general(A, no, title, scale):
         xx, yy = pr[2] + 8, pr[3] - 6 - i * 7
         S.fill(psp, [(xx, yy - 1.8), (xx + 6, yy - 1.8), (xx + 6, yy + 1.8), (xx, yy + 1.8)], ZONE_RGB.get(c, (230, 230, 230)), "SD_Таблицы")
         S.rect(psp, xx, yy - 1.8, xx + 6, yy + 1.8, "SD_Таблицы", (120, 120, 120), 9)
-        S.text(psp, ZONE_NAME.get(c, c), (xx + 8, yy), 2.2, "MIDDLE_LEFT", rgb=(80, 80, 80))
+        zn = ZONE_NAME.get(c, c)
+        if c == "living" and not re.search(r"квартир|дом", P.meta.get("object", "квартиры"), re.I):
+            zn = "залы, основные помещения"           # a cafe hall is not a «жилое помещение»
+        S.text(psp, zn, (xx + 8, yy), 2.2, "MIDDLE_LEFT", rgb=(80, 80, 80))
