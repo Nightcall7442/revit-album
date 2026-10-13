@@ -96,8 +96,11 @@ def _snapped(P):
     bad = []
     for lst, name in ((P.lighting, "светильник"), (P.sockets, "розетка"), (P.switches, "выключатель"), (P.plumbing, "вывод")):
         for o in lst:
+            keep = _face_coord(P, o) if lst is not P.lighting else None
             for k in ("x", "y", "x2", "y2"):
                 v = o.get(k)
+                if k == keep:          # a point on a wall face keeps the face coordinate (walls from a survey)
+                    continue
                 if v is not None and abs(v - 5 * round(v / 5.0)) > 0.01:
                     bad.append("%s %s=%s" % (name, k, ("%.1f" % v).rstrip("0").rstrip(".")))
                     break
@@ -107,6 +110,17 @@ def _snapped(P):
     if bad:
         return [I("POINT_NOT_SNAPPED", "warning", "%d позиций не кратны 5 мм (шум модели), напр.: %s" % (len(bad), "; ".join(bad[:4])))]
     return []
+
+
+def _face_coord(P, o):
+    """'x' / 'y' - the coordinate across the wall of a point lying on a wall face (within 1 mm), else None."""
+    r = P.room_of_point((o["x"], o["y"]), 40)
+    if r is None or r["shp"].exterior.distance(Point(o["x"], o["y"])) > 1.0:
+        return None
+    n = NORM.get(o.get("wall")) if o.get("wall") else None
+    if n is None:
+        n, _ = P.inward_normal((o["x"], o["y"]), r)
+    return "x" if abs(n[0]) > 0.5 else "y"
 
 
 def _elev_order(P):

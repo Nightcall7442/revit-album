@@ -339,18 +339,25 @@ def row_height(h, n):
     return h * 1.35 + 2.6 if n == 1 else h * 1.85 * n + 1.6
 
 
+def fixed_row_height(row_h, h, n):
+    """A fixed row height (legends) still grows when a cell wraps: wrapped lines never spill into the next row
+    (lesson L-051)."""
+    return max(row_h, (n - 1) * h * 1.85 + h * 1.35 + 1.2) if n > 1 else row_h
+
+
 def table_height(widths, header, rows, h=2.0, head_h=7.0, title=None, pad=1.2, total=None, row_h=None):
     tot = head_h + (5.0 if title else 0.0)
     for ri, r in enumerate(list(rows) + ([total] if total else [])):
         cells = r["cells"] if isinstance(r, dict) else r
         n = max([wrap_count("" if c is None else str(c), widths[i] - 2 * pad, h) for i, c in enumerate(cells)] + [1])
-        tot += row_h or row_height(h, n)
+        tot += fixed_row_height(row_h, h, n) if row_h else row_height(h, n)
     return tot
 
 
 def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns=None, title=None, pad=1.2,
-          total=None, zebra=False):
-    """Top-left at (x, y). rows: list of lists (strings) or dict(cells=..., bold=..., fill=rgb). Auto row height."""
+          total=None, zebra=False, out_rows=None):
+    """Top-left at (x, y). rows: list of lists (strings) or dict(cells=..., bold=..., fill=rgb). Auto row height.
+    out_rows: list to receive (top y, height) of every row (to centre legend symbols)."""
     tw = sum(widths)
     xs = [x]
     for w in widths:
@@ -371,7 +378,9 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
         for i, c in enumerate(cells):
             c = "" if c is None else str(c)
             lines_needed = max(lines_needed, wrap_count(c, widths[i] - 2 * pad, h, bold))
-        rh = row_h or row_height(h, lines_needed)
+        rh = fixed_row_height(row_h, h, lines_needed) if row_h else row_height(h, lines_needed)
+        if out_rows is not None:
+            out_rows.append((cy, rh))
         if isinstance(r, dict) and r.get("fill"):
             fill(psp, [(x, cy), (x + tw, cy), (x + tw, cy - rh), (x, cy - rh)], r["fill"], "SD_Таблицы")
         elif zebra and ri % 2 == 1:
@@ -401,12 +410,10 @@ def legend(psp, x, y, items, title="Условные обозначения", w1
     """items: list of (draw_fn(psp, cx, cy) | None, label). Returns bottom y."""
     rows = []
     cy = table(psp, x, y, [w1, w2], ["Эскиз", "Наименование"], [["", lab] for _, lab in items], h=1.9,
-               row_h=rh, head_h=6.0, title=title)
-    yy = y - 6.0
-    for fn, lab in items:
+               row_h=rh, head_h=6.0, title=title, out_rows=rows)
+    for (fn, lab), (top, hh) in zip(items, rows):
         if fn is not None:
-            fn(psp, x + w1 / 2.0, yy - rh / 2.0)
-        yy -= rh
+            fn(psp, x + w1 / 2.0, top - hh / 2.0)
     return cy
 
 

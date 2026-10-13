@@ -43,13 +43,12 @@ class Column:
         sc = self.w / float(sum(widths))
         wc = [w * sc for w in widths]
         rows = [[""] + list(cells) for fn, cells in items]
-        y0 = self.y
-        bottom = S.table(self.psp, self.x, self.y, wc, header, rows, h=h, row_h=rh, head_h=5.5, aligns=aligns, title=title)
-        yy = y0 - 5.5
-        for fn, _ in items:
+        geo = []
+        bottom = S.table(self.psp, self.x, self.y, wc, header, rows, h=h, row_h=rh, head_h=5.5, aligns=aligns, title=title,
+                         out_rows=geo)
+        for (fn, _), (top, hh) in zip(items, geo):
             if fn is not None:
-                fn(self.psp, self.x + wc[0] / 2.0, yy - rh / 2.0)
-            yy -= rh
+                fn(self.psp, self.x + wc[0] / 2.0, top - hh / 2.0)
         self.y = bottom - 9.0
         self._check()
 

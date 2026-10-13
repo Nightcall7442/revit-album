@@ -13,6 +13,11 @@
                                                 inventory + plan sections of a 3ds Max scene
   python3 sda.py import-dxf plan.dxf OUT [--window x0,y0,x1,y1] [--units mm]
                                                 draft project.json from a DWG/DXF plan
+  python3 sda.py fix project.json [--dry]        safe automatic corrections (5-mm module, hot water left, points on
+                                                walls, pass-through switches, IP44 in wet rooms, draft marks/doors)
+  python3 sda.py propose project.json [--dry] [--only lighting,sockets]
+                                                design proposal by norms for EMPTY sections (light, switches,
+                                                sockets, plumbing, panel, groups, floors, ceilings, finishes)
   python3 sda.py test                            full test-suite (must be green before delivery)
 """
 import json
@@ -117,12 +122,44 @@ def cmd_import_dxf(args):
     dxf_plan.main(args[0], args[1], [float(v) for v in w.split(",")] if w else None, _opt(args, "--units"))
 
 
+def cmd_fix(args):
+    from sdalbum import autofix, history
+    path = args[0]
+    d = history.load(path)
+    d2, log, rest, qs = autofix.fix(d, os.path.dirname(os.path.abspath(path)))
+    autofix.print_log(log, rest, qs)
+    if log and "--dry" not in args:
+        n = history.save(path, d2, "автоисправление: " + ", ".join(sorted(set(e["code"] for e in log))), log)
+        print("сохранено (правка %d; откат: sda.py undo %s)" % (n, path))
+    return 1 if any(i["level"] == "error" for i in rest) else 0
+
+
+def cmd_propose(args):
+    from sdalbum import autofix, history, propose
+    path = args[0]
+    base = os.path.dirname(os.path.abspath(path))
+    only = _opt(args, "--only")
+    d = history.load(path)
+    d2, log = propose.propose(d, base, only.split(",") if only else None)
+    propose.print_log(log)
+    if not log:
+        print("все разделы уже заполнены - предлагать нечего (данные дизайнера не перезаписываются)")
+        return 0
+    d3, flog, rest, qs = autofix.fix(d2, base)
+    autofix.print_log(flog, rest, qs)
+    if "--dry" not in args:
+        n = history.save(path, d3, "проектное предложение: " + ", ".join(e["section"] for e in log), log + flog)
+        print("сохранено (правка %d; откат: sda.py undo %s)" % (n, path))
+    return 1 if any(i["level"] == "error" for i in rest) else 0
+
+
 def cmd_test(args):
     return subprocess.call([sys.executable, "-m", "pytest", "-q", os.path.join(HERE, "tests")] + args)
 
 
 CMDS = {"doctor": cmd_doctor, "validate": cmd_validate, "build": cmd_build, "qa": cmd_qa, "revit": cmd_revit,
-        "import-max": cmd_import_max, "import-dxf": cmd_import_dxf, "test": cmd_test}
+        "import-max": cmd_import_max, "import-dxf": cmd_import_dxf, "test": cmd_test, "fix": cmd_fix,
+        "propose": cmd_propose}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:

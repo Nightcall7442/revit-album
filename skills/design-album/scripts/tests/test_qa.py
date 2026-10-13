@@ -70,3 +70,13 @@ def test_clipped_dimension_is_found_by_album(tmp_path):
     S.text(blk, "1100", (1200, 500), 100)
     issues = A.check_clipping()
     assert issues and issues[0]["code"] == "CONTENT_CLIPPED"
+
+
+def test_wrapped_legend_cell_grows_the_row():
+    """A long group list in a legend row (rows of fixed height) wrapped into the next row (lesson L-051)."""
+    doc, psp = _sheet()
+    rows = [["", "Светильник встраиваемый поворотный, GU10, 7 Вт, 3000 K", "31",
+             "Гостиная, Коридор, Кухня-столовая, Прихожая, Спальня"],
+            ["", "Светильник встраиваемый влагозащищённый IP44", "4", "Санузел, Санузел совмещённый"]]
+    S.table(psp, 303, 250, [16, 49, 9, 27], ["Эскиз", "Наименование", "Кол.", "Группа"], rows, h=1.45, row_h=5.2, head_h=5.5)
+    assert "TEXT_OVERLAP" not in _codes(doc)

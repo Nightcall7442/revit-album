@@ -862,7 +862,10 @@ LIGHT_SPEC = {
 
 
 def wiring_runs(P):
+    """Control lines: switch -> its fixtures, nearest first. A group switched from several places is wired once;
+    every further switch gets one line to the nearest fixture of the group (no second web over the room)."""
     runs = []
+    done = set()
     for s in P.switches:
         for ctl in s.get("controls", []):
             fx = [f for f in P.lighting if f.get("group") == ctl.get("group") and
@@ -879,6 +882,12 @@ def wiring_runs(P):
                     pts.append((f["x"], f["y"]))
             if not pts:
                 continue
+            key = (ctl.get("group"), tuple(sorted(ctl.get("kinds") or ())))
+            if key in done:
+                near = min(pts, key=lambda p: (p[0] - s["x"]) ** 2 + (p[1] - s["y"]) ** 2)
+                runs.append(dict(switch=s["id"], key=ctl.get("key", ""), pts=[(s["x"], s["y"]), near]))
+                continue
+            done.add(key)
             cur = (s["x"], s["y"])
             ch = [cur]
             rest = list(pts)

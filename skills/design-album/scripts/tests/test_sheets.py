@@ -234,3 +234,17 @@ def test_general_sheet_lists_client_questions(tmp_path):
     A, no, _ = _sheet(URGENCH, "general", tmp_path)
     txt = " ".join(e.text for e in A.layouts[no] if e.dxftype() == "MTEXT")
     assert "Д-4" in txt and "задевают друг друга" in txt and "задевает" in txt
+
+
+def test_multipoint_group_wired_once(make_project):
+    """Two pass-through switches of one group: the second gets one line to the nearest fixture, not a second web."""
+    from sdalbum.sheets_plans import wiring_runs
+
+    def mut(d):
+        d["lighting"] += [dict(kind="spot", x=x, y=y, group="Комната") for x, y in ((3000, 600), (4000, 600), (5000, 1800))]
+        d["switches"][0]["controls"][0]["mode"] = "pass"
+        d["switches"].append(dict(id="В3", x=2100, y=1500, h=900, wall="X+", keys=1,
+                                  controls=[{"key": "а", "group": "Комната", "mode": "pass"}]))
+    P = make_project(mut)
+    runs = [r for r in wiring_runs(P) if r["switch"] in ("В1", "В3")]
+    assert len(runs[0]["pts"]) == 7 and len(runs[1]["pts"]) == 2
