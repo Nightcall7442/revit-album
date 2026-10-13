@@ -242,3 +242,37 @@ def test_big_ngon_is_triangulated_fast():
     tris = raster3d._triangles(pts)
     assert time.time() - t < 2.0
     assert len(tris) == n - 2
+
+
+def test_faces_of_an_unevaluated_topology_do_not_cut_across_the_piece():
+    """Metal rack (lesson L-087): the base object of a part edited by modifiers that are not evaluated has faces
+    pointing at vertices that do not exist and big oblique faces from one shelf to another - drawn as triangles
+    across the whole rack. A part with such faces drops its large oblique faces; a sound mesh keeps a sloped back."""
+    from sdalbum import items3d
+    v, f = _box(0, 0, 0, 1800, 450, 5)                      # a shelf plate
+    v2, f2 = _box(0, 0, 600, 1800, 450, 605)                # the next shelf
+    v = np.vstack([v, v2])
+    f = f + [[i + 8 for i in x] for x in f2]
+    f.append([0, 1, 14, 15])                                # oblique quad: front of one shelf to the back of the next
+    f.append([3, 2, 16, 17])                                # a face of the stream pointing past the vertex list
+    f.append([0, 6, 2])                                     # a sliver across the plate from corner to corner
+    bad = items3d.Part(dict(name="shelves001", v=v, f=f))
+    assert len(bad.f) == 12 and [0, 1, 14, 15] not in bad.f and [0, 6, 2] not in bad.f
+    m = items3d.ItemMesh(dict(parts=[dict(name="shelves001", v=v, f=f + [[0, 5, 6, 3]])]))   # a plate face with a diagonal side
+    L = m.edges(np.array([0.0, 0.0, 1.0]))
+    long_oblique = [e for e in L if np.sort(np.abs(e[0] - e[1]))[1] > 150 and np.linalg.norm(e[0] - e[1]) > 300]
+    assert not long_oblique
+    back = np.array([(0, 0, 450), (500, 0, 450), (500, 120, 900), (0, 120, 900)], float)   # a sloped chair back
+    ok = items3d.Part(dict(name="chair", v=back, f=[[0, 1, 2, 3]]))
+    assert len(ok.f) == 1
+
+
+def test_a_smooth_round_base_keeps_its_outline(tmp_path):
+    """The cone of a table base is many nearly coplanar faces: its silhouette is drawn (the flipped-winding rule of
+    L-087 must not erase it)."""
+    from sdalbum import items3d
+    v, f = _cyl(0, 0, 250, 0, 700, n=96)
+    m = items3d.ItemMesh(dict(parts=[dict(name="base", v=v, f=f)]))
+    L = m.edges(np.array([0.0, -1.0, 0.0]))
+    vertical = [e for e in L if abs(e[0][2] - e[1][2]) > 600]
+    assert len(vertical) >= 2                                      # the left and right outline of the cylinder

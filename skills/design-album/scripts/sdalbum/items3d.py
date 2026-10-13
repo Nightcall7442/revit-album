@@ -131,7 +131,20 @@ class Part:
         self.prop = bool(d.get("prop"))
         self.v = np.asarray(d["v"], float)
         nv = len(self.v)
-        self.f = [list(map(int, f)) for f in d.get("f") or [] if len(f) >= 3 and max(f) < nv and min(f) >= 0]
+        raw = [list(map(int, f)) for f in d.get("f") or [] if len(f) >= 3]
+        self.f = [f for f in raw if max(f) < nv and min(f) >= 0]
+        self.unsound = len(self.f) < len(raw)
+        if self.unsound and self.f:
+            # faces point past the vertex list: the topology was edited by modifiers that are not evaluated, and its
+            # big oblique faces (one shelf to another) cut across the piece - lesson L-087
+            ext = np.array([np.ptp(self.v[f], axis=0) for f in self.f])
+            srt = np.sort(ext, axis=1)
+            keep = ~((srt[:, 0] > 20.0) & (srt[:, 1] > 200.0))
+            typ = np.percentile(ext, 95, axis=0)          # a face far longer along an axis than the part's faces are
+            keep &= ~np.any(ext > np.maximum(5.0 * typ, typ + 100.0), axis=1)
+            _, area = _normals(self.v, self.f)             # a sliver from corner to corner of a plate
+            keep &= ~((srt[:, 1] > 200.0) & (area < 0.08 * srt[:, 1] * srt[:, 2]))
+            self.f = [f for f, k in zip(self.f, keep) if k]
         if len(self.f) > 500:                  # faces of a broken stream span the whole object: drop them
             tri = np.array([f[:3] for f in self.f], int)
             e = np.max(np.linalg.norm(self.v[tri] - self.v[np.roll(tri, 1, axis=1)], axis=2), axis=1)
@@ -223,21 +236,28 @@ class ItemMesh:
                 emap = {}
                 for fi, f in enumerate(p.f):
                     for a, b in zip(f, f[1:] + f[:1]):
-                        emap.setdefault((min(a, b), max(a, b)), []).append(fi)
+                        emap.setdefault((min(a, b), max(a, b)), []).append((fi, 1 if a < b else -1))
                 E = np.array(list(emap.keys()), int).reshape(-1, 2)
-                F0 = np.array([fs[0] for fs in emap.values()], int)
-                F1 = np.array([fs[1] if len(fs) > 1 else -1 for fs in emap.values()], int)
-                p._adj = (n, E, F0, F1)
-            n, E, F0, F1 = p._adj
+                F0 = np.array([fs[0][0] for fs in emap.values()], int)
+                F1 = np.array([fs[1][0] if len(fs) > 1 else -1 for fs in emap.values()], int)
+                # the winding of scene meshes is not consistent: a face whose shared edge runs the same way as in its
+                # neighbour is turned over for this edge (a closed, well-wound mesh has them opposite)
+                SG = np.array([(-fs[0][1] * fs[1][1]) if len(fs) > 1 else 1 for fs in emap.values()], float)
+                p._adj = (n, E, F0, F1, SG)
+            n, E, F0, F1, SG = p._adj
             if not len(E):
                 continue
             bnd = F1 < 0
             n0 = n[F0]
-            n1 = n[np.where(bnd, F0, F1)]
+            n1 = n[np.where(bnd, F0, F1)] * SG[:, None]
             cre = np.sum(n0 * n1, axis=1) < cosc
             d0, d1 = n0 @ view, n1 @ view
-            sil = (d0 * d1 < 0)
+            sil = d0 * d1 < 0
             m = bnd | cre | sil
+            if getattr(p, "unsound", False):        # long edges across two axes of an unsound topology: not edges
+                ext = np.sort(np.abs(p.v[E[:, 0]] - p.v[E[:, 1]]), axis=1)
+                ln = np.linalg.norm(p.v[E[:, 0]] - p.v[E[:, 1]], axis=1)
+                m &= ~((ln > 300.0) & (ext[:, 1] > 0.02 * ln))     # a long edge off the axes
             if m.any():
                 out.append(np.stack([p.v[E[m, 0]], p.v[E[m, 1]]], axis=1))
         return np.concatenate(out) if out else np.zeros((0, 2, 3))
