@@ -237,7 +237,8 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
     for key in cuts:
         _plot(rows, sec[key], os.path.join(out, "plan_%s.png" % key), "%s: z = %.0f мм" % (key, sec[key]["h"]))
     _summary(rows, u, H, sec, os.path.join(out, "inventory.md"), path)
-    _draft(rows, os.path.join(out, "draft_project.json"), ceil)
+    slab = H * k if H and H * k > 2000 else None      # wall height of the scene = floor-to-slab
+    _draft(rows, os.path.join(out, "draft_project.json"), ceil, slab)
     print("units:", u, "(guess from storey %s)" % (round(H, 1) if H else "-") if not units else "")
     print("nodes:", len(rows), " meshes:", len(meshes), " ->", out)
 
@@ -329,11 +330,11 @@ def scene_objects(rows):
     return out
 
 
-def _draft(rows, path, ceil):
+def _draft(rows, path, ceil, slab=None):
     """Walls, openings (doors / glazing in wall gaps), furniture by object names, named objects for room naming."""
     from importers import scene_draft
     objs = scene_objects(rows)
-    d, shell = scene_draft.build(objs, ceil, path, png=os.path.join(os.path.dirname(path), "draft_plan.png"))
+    d, shell = scene_draft.build(objs, ceil, path, png=os.path.join(os.path.dirname(path), "draft_plan.png"), slab=slab)
     return d
 
 

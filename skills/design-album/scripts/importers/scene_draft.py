@@ -259,7 +259,7 @@ def openings(walls_polys, objects, outline_of, max_gap=2600):
     return out
 
 
-def build(objects, ceil, path, png=None):
+def build(objects, ceil, path, png=None, slab=None):
     from shapely.geometry import Polygon
     walls, shell = wall_candidates(objects)
     ws = []
@@ -313,7 +313,8 @@ def build(objects, ceil, path, png=None):
     named = [[o["name"], round((o["rect"][0] + o["rect"][2]) / 2), round((o["rect"][1] + o["rect"][3]) / 2)]
              for o in objects if o["z0"] < 2500 and o["name"]][:4000]
     d = dict(meta=dict(title="ДИЗАЙН-ПРОЕКТ|ИНТЕРЬЕРА", studio="Space Design Studio", stage="Дизайн-проект"),
-             levels=dict(floor=0, ceiling=int(round(ceil / 10.0) * 10), slab=int(round((ceil + 400) / 10.0) * 10)),
+             levels=dict(floor=0, ceiling=int(round(ceil / 10.0) * 10),
+                         slab=int(round((slab if slab and slab > ceil else ceil + 400) / 10.0) * 10)),
              grid=dict(x=[], y=[]), walls=ws, openings=ops, rooms=[], furniture=furn, lighting=[], switches=[],
              sockets=[], plumbing=[], floors=[], ceilings=dict(types=[], zones=[]), elevations=[], nodes=[],
              _objects=named,
