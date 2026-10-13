@@ -25,6 +25,12 @@
   python3 sda.py history project.json            journal of changes
   python3 sda.py diff old.json new.json | diff project.json --since N
                                                 changes in words + sheets they touch (for the client)
+  python3 sda.py make INPUT OUT [--revit] [--target-dir "C:\\..."] [--no-propose] [--scale 50] [--no-png]
+                                                ONE COMMAND: any input (project.json / .max / .dxf / .dwg / .pdf /
+                                                photo / folder) -> fixes -> proposal by norms -> album -> QA ->
+                                                Revit (optional) -> OUT/report.md with questions for the client
+  python3 sda.py import-pdf plan.pdf OUT [--page 1] [--scale 50]
+                                                vector PDF -> DXF -> draft project.json (scale from dimensions)
   python3 sda.py test                            full test-suite (must be green before delivery)
 """
 import json
@@ -253,6 +259,21 @@ def cmd_diff(args):
     return 0
 
 
+def cmd_make(args):
+    from sdalbum import pipeline
+    rep = pipeline.make(args[0], args[1], revit="--revit" in args, target_dir=_opt(args, "--target-dir"),
+                        propose_="--no-propose" not in args, png="--no-png" not in args, scale=_opt(args, "--scale", float),
+                        sheets=_opt(args, "--sheets").split(",") if "--sheets" in args else None)
+    print(open(os.path.join(args[1], "report.md"), encoding="utf-8").read())
+    return 0 if rep["status"] == "ok" else 1
+
+
+def cmd_import_pdf(args):
+    from importers import pdf_plan
+    res = pdf_plan.main(args[0], args[1], page=_opt(args, "--page", int) or 1, scale=_opt(args, "--scale", float))
+    return 0 if res["status"] == "ok" else 1
+
+
 def cmd_test(args):
     return subprocess.call([sys.executable, "-m", "pytest", "-q", os.path.join(HERE, "tests")] + args)
 
@@ -260,7 +281,7 @@ def cmd_test(args):
 CMDS = {"doctor": cmd_doctor, "validate": cmd_validate, "build": cmd_build, "qa": cmd_qa, "revit": cmd_revit,
         "import-max": cmd_import_max, "import-dxf": cmd_import_dxf, "test": cmd_test, "fix": cmd_fix,
         "propose": cmd_propose, "find": cmd_find, "edit": cmd_edit, "undo": cmd_undo, "history": cmd_history,
-        "diff": cmd_diff}
+        "diff": cmd_diff, "make": cmd_make, "import-pdf": cmd_import_pdf}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:

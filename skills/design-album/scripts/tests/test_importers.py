@@ -64,3 +64,78 @@ def test_dxf_import_draft_builds_rooms(tmp_path):
     P = model.Project(d, str(tmp_path))
     assert len(P.rooms) == 1 and abs(P.rooms[0]["area_exact"] - 24.0) < 0.01
     assert (tmp_path / "out" / "plan.png").exists()
+
+
+def _plan_pdf(path, with_dims=True):
+    """A vector PDF like an architect's export: walls as dark fills at 1:50 on A3, dimension lines with numbers."""
+    import pymupdf
+    pt = 72.0 / 25.4
+    doc = pymupdf.open()
+    pg = doc.new_page(width=420 * pt, height=297 * pt)
+    H = 297 * pt
+
+    def R(x0, y0, x1, y1):                 # model mm -> paper rect (1:50, origin at 100/80 mm, y up)
+        return pymupdf.Rect((100 + x0 / 50.0) * pt, H - (80 + y1 / 50.0) * pt, (100 + x1 / 50.0) * pt, H - (80 + y0 / 50.0) * pt)
+    for r in [(-300, -300, 2000, 0), (2900, -300, 6300, 0), (-300, 4000, 1500, 4300), (3000, 4000, 6300, 4300),
+              (-300, 0, 0, 4000), (6000, 0, 6300, 4000)]:
+        pg.draw_rect(R(*r), color=None, fill=(0.15, 0.15, 0.16))
+    if with_dims:
+        y = H - (80 - 1000 / 50.0) * pt
+        pg.draw_line(((100 - 300 / 50.0) * pt, y), ((100 + 6300 / 50.0) * pt, y), color=(0, 0, 0), width=0.3)
+        pg.insert_text(((100 + 2900 / 50.0) * pt, y - 1.0 * pt), "6600", fontsize=6)
+        x = (100 - 1100 / 50.0) * pt
+        pg.draw_line((x, H - (80 - 300 / 50.0) * pt), (x, H - (80 + 4300 / 50.0) * pt), color=(0, 0, 0), width=0.3)
+        pg.insert_text((x - 1.0 * pt, H - (80 + 1800 / 50.0) * pt), "4600", fontsize=6, rotate=90)
+        y2 = H - (80 - 600 / 50.0) * pt
+        pg.draw_line(((100 + 0) * pt, y2), ((100 + 2000 / 50.0) * pt, y2), color=(0, 0, 0), width=0.3)
+        pg.insert_text(((100 + 800 / 50.0) * pt, y2 - 1.0 * pt), "2000", fontsize=6)
+    pg.insert_text(((100 + 2500 / 50.0) * pt, H - (80 + 2000 / 50.0) * pt), "Гостиная", fontsize=8,
+                   fontname="helv")
+    doc.save(path)
+
+
+def test_vector_pdf_scale_found_and_walls_imported(tmp_path):
+    from importers import pdf_plan
+    from sdalbum import autofix, model
+    src = str(tmp_path / "plan.pdf")
+    _plan_pdf(src)
+    a = pdf_plan.analyse(src)
+    scale, votes = pdf_plan.detect_scale(a)
+    assert scale == 50, votes
+    res = pdf_plan.main(src, str(tmp_path / "imp"))
+    assert res["status"] == "ok" and res["scale"] == 50
+    d = json.load(open(tmp_path / "imp" / "draft_project.json", encoding="utf-8"))
+    d2, log, rest, qs = autofix.fix(d, str(tmp_path))
+    P = model.Project(d2, str(tmp_path))
+    assert len(P.rooms) == 1 and abs(P.rooms[0]["area"] - 24.0) < 0.1
+    assert sorted(o["w"] for o in d2["openings"]) == [900, 1500]
+
+
+def test_pdf_without_dimensions_asks_for_scale(tmp_path):
+    from importers import pdf_plan
+    src = str(tmp_path / "plan.pdf")
+    _plan_pdf(src, with_dims=False)
+    res = pdf_plan.main(src, str(tmp_path / "imp"))
+    assert res["status"] == "no_scale"
+    assert (tmp_path / "imp" / "page-1.png").exists()
+
+
+def test_hatch_with_holes_is_not_a_solid_block(tmp_path):
+    """A wall hatch drawn around the rooms (outer contour + room holes) must not turn the flat into one wall."""
+    import ezdxf
+    from importers import dxf_plan
+    from sdalbum import autofix, model
+    doc = ezdxf.new(setup=True)
+    doc.header["$INSUNITS"] = 4
+    msp = doc.modelspace()
+    doc.layers.add("A-WALL")
+    h = msp.add_hatch(dxfattribs={"layer": "A-WALL"})
+    h.paths.add_polyline_path([(-300, -300), (6300, -300), (6300, 4300), (-300, 4300)], is_closed=True)
+    h.paths.add_polyline_path([(0, 0), (6000, 0), (6000, 4000), (0, 4000)], is_closed=True)
+    src = str(tmp_path / "h.dxf")
+    doc.saveas(src)
+    dxf_plan.main(src, str(tmp_path / "imp"))
+    d = json.load(open(tmp_path / "imp" / "draft_project.json", encoding="utf-8"))
+    d2, log, rest, qs = autofix.fix(d, str(tmp_path))
+    P = model.Project(d2, str(tmp_path))
+    assert len(P.rooms) == 1 and abs(P.rooms[0]["area"] - 24.0) < 0.05

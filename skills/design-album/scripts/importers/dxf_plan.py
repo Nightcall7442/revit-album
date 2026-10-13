@@ -77,16 +77,22 @@ def _polys(e, k):
         elif t == "POLYLINE" and e.is_closed:
             out.append(Polygon([(v.dxf.location.x * k, v.dxf.location.y * k) for v in e.vertices]))
         elif t == "HATCH":
+            loops = []
             for bp in e.paths:
                 if hasattr(bp, "vertices") and bp.vertices:
-                    out.append(Polygon([(v[0] * k, v[1] * k) for v in bp.vertices]))
+                    loops.append(Polygon([(v[0] * k, v[1] * k) for v in bp.vertices]))
                 elif hasattr(bp, "edges"):
                     pts = []
                     for ed in bp.edges:
                         if hasattr(ed, "start"):
                             pts.append((ed.start[0] * k, ed.start[1] * k))
                     if len(pts) >= 3:
-                        out.append(Polygon(pts))
+                        loops.append(Polygon(pts))
+            # outer boundary + holes: even-odd, then hole-free pieces (a hatch around rooms is not a solid block)
+            from importers.geomutil import decompose, even_odd
+            g = even_odd(loops)
+            if g is not None and not g.is_empty:
+                out.extend(decompose(g))
         elif t == "SOLID":
             pts = [e.dxf.vtx0, e.dxf.vtx1, e.dxf.vtx3, e.dxf.vtx2]
             out.append(Polygon([(p[0] * k, p[1] * k) for p in pts]))
@@ -137,11 +143,11 @@ def main(path, out, window=None, units=None):
     # clusters of drawings in model space
     clusters = []
     if walls:
-        u = unary_union([p.buffer(800) for p, _, _ in walls])
+        u = unary_union([p.buffer(1300) for p, _, _ in walls])     # joins runs across gaps <= 2600
         comps = list(u.geoms) if hasattr(u, "geoms") else [u]
         for c in comps:
             members = [w for w in walls if c.contains(w[0].representative_point())]
-            clusters.append(dict(bounds=[round(v) for v in c.buffer(-800).bounds], walls=len(members),
+            clusters.append(dict(bounds=[round(v) for v in c.buffer(-1300).bounds], walls=len(members),
                                  area_m2=round(sum(w[0].area for w in members) / 1e6, 2)))
         clusters.sort(key=lambda c: -c["walls"])
     json.dump(clusters, open(os.path.join(out, "clusters.json"), "w"), indent=1)
@@ -185,7 +191,7 @@ def main(path, out, window=None, units=None):
         len(texts), len(inserts), ", ".join(sorted({t["text"] for t in texts if re.search(ROOM_WORDS, t["text"].lower())})[:20]) or "-")]
     open(os.path.join(out, "layers.md"), "w", encoding="utf-8").write("\n".join(md) + "\n")
     _render(doc, src, win, k, os.path.join(out, "plan.png"))
-    _draft(walls, texts, win, os.path.join(out, "draft_project.json"))
+    _draft(walls, texts, win, os.path.join(out, "draft_project.json"), strokes=_strokes(msp, k, roles, win))
     print("walls:", len([w for w in walls if win.contains(w[0].representative_point())]), " texts:", len(texts),
           " inserts:", len(inserts), " ->", out)
 
@@ -304,7 +310,72 @@ def close_gaps(polys, max_gap=2600, min_t=60, max_t=700, min_w=450):
     return out
 
 
-def _draft(walls, texts, win, path):
+def _strokes(msp, k, roles, win):
+    """Thin lines of the drawing (window frames, door leaves and swing arcs): [(LineString, is_curve)]."""
+    from shapely.geometry import LineString, Point
+    out = []
+    for e in msp:
+        t = e.dxftype()
+        if roles.get(e.dxf.layer) in ("wall", "partition", "hatch", "dims", "axes", "text"):
+            continue
+        try:
+            if t == "LINE":
+                a, b = e.dxf.start, e.dxf.end
+                ln = LineString([(a[0] * k, a[1] * k), (b[0] * k, b[1] * k)])
+                if ln.length > 1 and win.intersects(ln):
+                    out.append((ln, False))
+            elif t in ("ARC", "CIRCLE"):
+                c = e.dxf.center
+                out.append((LineString([(c[0] * k - 1, c[1] * k), (c[0] * k + 1, c[1] * k)]).buffer(e.dxf.radius * k).exterior, True))
+            elif t == "LWPOLYLINE":
+                pts = [(p[0] * k, p[1] * k) for p in e.get_points("xy")]
+                bul = any(abs(p[4]) > 1e-6 for p in e.get_points("xyseb"))
+                if len(pts) < 2:
+                    continue
+                ln = LineString(pts)
+                if not win.intersects(ln):
+                    continue
+                chord = LineString([pts[0], pts[-1]])
+                sag = max(chord.distance(Point(q)) for q in pts) if chord.length > 1 else 0.0
+                if bul or (len(pts) >= 4 and sag > 0.1 * chord.length):          # a swing arc, not a run of lines
+                    out.append((ln, True))
+                else:
+                    for a, b in zip(pts[:-1], pts[1:]):
+                        out.append((LineString([a, b]), False))
+        except Exception:
+            continue
+    return out
+
+
+def _gap_kind(g, horiz, strokes, outside, width):
+    """window | door | passage by what is drawn in / at the gap: parallel frame lines = window, a swing arc or a leaf
+    across the opening = door; nothing drawn: by position (exterior -> window, wide interior -> passage)."""
+    if strokes:
+        x0, y0, x1, y1 = g.bounds
+        frames, arcs = 0, 0
+        zone = g.buffer(10)
+        near = g.buffer(60)                     # a swing arc ends on the face of this very opening
+        for ln, curve in strokes:
+            if curve:
+                if near.intersects(ln) and ln.length > 0.5 * width:
+                    arcs += 1
+                continue
+            if not zone.contains(ln.interpolate(0.5, normalized=True)):
+                continue
+            (ax, ay), (bx, by) = ln.coords[0], ln.coords[-1]
+            along = abs(bx - ax) if horiz else abs(by - ay)          # horiz=True: opening measured along x
+            if along >= 0.6 * width:
+                frames += 1
+        if arcs:
+            return "balcony" if outside and frames >= 2 else "door"      # glazed leaf in the facade = balcony door
+        if frames >= 2:
+            return "window"
+    if outside:
+        return "window" if width >= 600 else "door"
+    return "passage" if width >= 1300 else "door"
+
+
+def _draft(walls, texts, win, path, strokes=None):
     from shapely.geometry import Point
     from shapely.ops import unary_union
     ws, n = [], 0
@@ -338,10 +409,11 @@ def _draft(walls, texts, win, path):
         a = Point(c.x + n[0] * (t / 2 + 150), c.y + n[1] * (t / 2 + 150))
         b = Point(c.x - n[0] * (t / 2 + 150), c.y - n[1] * (t / 2 + 150))
         outside = outline is not None and (not outline.contains(a) or not outline.contains(b))
-        kind = "window" if outside and width >= 600 else "door"
-        o = dict(id="%s.%d" % ("ОК" if kind == "window" else "Д", i), mark="ОК-?" if kind == "window" else "Д-?",
+        kind = _gap_kind(g, horiz, strokes, outside, width)
+        pref = {"window": "ОК", "door": "Д", "passage": "ПР", "balcony": "ДБ"}[kind]
+        o = dict(id="%s.%d" % (pref, i), mark="%s-?" % pref,
                  kind=kind, wall=wid, c=round(c.x if horiz else c.y), w=round(width),
-                 h=1500 if kind == "window" else 2100, check=True)
+                 h=1500 if kind == "window" else 2200 if kind == "balcony" else 2100, check=True)
         if kind == "window":
             o["sill"] = 900
         openings.append(o)

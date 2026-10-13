@@ -51,6 +51,9 @@ def fix(data, base_dir="."):
     log = []
     draft = bool(d.get("_todo")) or bool(d.get("_draft"))
     _defaults(d, log)
+    if draft:
+        _draft_snap(d, log)
+        _auto_grid(d, base_dir, log)
     _auto_rooms(d, base_dir, log)
     _rooms(d, log, draft)
     P = _P(d, base_dir)
@@ -122,6 +125,109 @@ def _rooms(d, log, draft):
             r["num"] = str(i + 1)
 
 
+def _draft_snap(d, log):
+    """A survey drawing exported to PDF / DXF carries 0.5-2 mm noise (1499, 5617): walls and openings of a draft
+    are put on the 5-mm module (lesson L-011)."""
+    n = 0
+    for w in d.get("walls", []):
+        if w.get("rect"):
+            new = [T.snap(v) for v in w["rect"]]
+            if new != w["rect"]:
+                w["rect"] = new
+                n += 1
+        if w.get("poly"):
+            new = [[T.snap(x), T.snap(y)] for x, y in w["poly"]]
+            if new != w["poly"]:
+                w["poly"] = new
+                n += 1
+    piece = {w["id"]: w for w in d.get("walls", []) if w.get("source") == "проём" and w.get("rect")}
+    for o in d.get("openings", []):
+        if o.get("wall") in piece:          # an opening found in a wall gap fills its gap piece exactly
+            x0, y0, x1, y1 = piece[o["wall"]]["rect"]
+            horiz = abs(x1 - x0) >= abs(y1 - y0)
+            c, w = ((x0 + x1) / 2.0, abs(x1 - x0)) if horiz else ((y0 + y1) / 2.0, abs(y1 - y0))
+            c = int(c) if c == int(c) else c
+            if (o.get("c"), o.get("w")) != (c, w):
+                o["c"], o["w"] = c, w
+                n += 1
+            continue
+        for k in ("c", "w"):
+            if k in o and o[k] != T.snap(o[k]):
+                o[k] = T.snap(o[k])
+                n += 1
+    for r in d.get("rooms", []):
+        if r.get("seed"):
+            r["seed"] = [T.snap(v) for v in r["seed"]]
+    if n:
+        L(log, "DRAFT_SNAP", "стены и проёмы черновика приведены к шагу 5 мм (%d правок)" % n, n)
+
+
+AXIS_LETTERS = "АБВГДЕЖИКЛМНПРСТУФШЭЮЯ"          # ГОСТ 21.101: without Ё З Й О Х Ц Ч Щ Ъ Ы Ь
+
+
+def _auto_grid(d, base_dir, log):
+    """No axes in a draft: axes on the centre lines of bearing walls (>= 150 thick, >= 1.5 m long), origin moved
+    to axis 1 / А."""
+    if d.get("grid", {}).get("x") or not d.get("walls"):
+        return
+    P0 = _P(dict(d, rooms=[]), base_dir)
+    xs, ys = _wall_centres(P0.shell)
+    def cluster(vals):
+        out = []
+        for v, L_ in sorted(vals):
+            if out and abs(v - out[-1][0]) <= 100:
+                c, LL = out[-1]
+                out[-1] = ((c * LL + v * L_) / (LL + L_), LL + L_)
+            else:
+                out.append((v, L_))
+        return [T.snap(v) for v, _ in out]
+    gx, gy = cluster(xs), cluster(ys)
+    if len(gx) < 2 or len(gy) < 2:
+        return
+    dx, dy = -gx[0], -gy[0]
+    if dx or dy:
+        from .editor import _shift
+        P = _P(d, base_dir)
+        for sec in ("walls", "openings", "rooms", "furniture", "lighting", "switches", "sockets", "plumbing", "nodes"):
+            for it in d.get(sec, []):
+                _shift(it, dx, dy, P)
+        d["separations"] = [[[a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy]] for a, b in d.get("separations", [])]
+    d["grid"] = {"x": [[str(i + 1), v + dx] for i, v in enumerate(gx)],
+                 "y": [[AXIS_LETTERS[i] if i < len(AXIS_LETTERS) else "Я%d" % i, v + dy] for i, v in enumerate(gy)]}
+    L(log, "AXES", "оси по центрам несущих стен: %s / %s; начало координат - пересечение 1/А" % (
+        ", ".join(n for n, _ in d["grid"]["x"]), ", ".join(n for n, _ in d["grid"]["y"])))
+
+
+def _wall_centres(shell, tmin=150, tmax=700, lmin=1500):
+    """Centre lines of bearing walls from the wall mass itself (any polygon shapes): two parallel faces 150-700
+    apart with solid wall between them over >= 1.5 m. -> ([(x, overlap)], [(y, overlap)])"""
+    from shapely.geometry import box
+    edges = []
+    for g in (shell.geoms if hasattr(shell, "geoms") else [shell]):
+        for ring in [g.exterior] + list(g.interiors):
+            cs = list(ring.coords)
+            for a, b in zip(cs[:-1], cs[1:]):
+                edges.append((a, b))
+    vert = [(a[0], min(a[1], b[1]), max(a[1], b[1])) for a, b in edges if abs(a[0] - b[0]) < 1 and abs(a[1] - b[1]) >= lmin * 0.5]
+    hor = [(a[1], min(a[0], b[0]), max(a[0], b[0])) for a, b in edges if abs(a[1] - b[1]) < 1 and abs(a[0] - b[0]) >= lmin * 0.5]
+    xs, ys = [], []
+    for lst, out, is_v in ((vert, xs, True), (hor, ys, False)):
+        for i in range(len(lst)):
+            for j in range(i + 1, len(lst)):
+                c1, lo1, hi1 = lst[i]
+                c2, lo2, hi2 = lst[j]
+                t = abs(c1 - c2)
+                lo, hi = max(lo1, lo2), min(hi1, hi2)
+                if not (tmin <= t <= tmax) or hi - lo < lmin:
+                    continue
+                a, b = min(c1, c2), max(c1, c2)
+                strip = box(a + 1, lo + 1, b - 1, hi - 1) if is_v else box(lo + 1, a + 1, hi - 1, b - 1)
+                if shell.intersection(strip).area < 0.9 * strip.area:
+                    continue
+                out.append(((a + b) / 2.0, hi - lo))
+    return xs, ys
+
+
 def _auto_rooms(d, base_dir, log):
     """No rooms in a draft: every closed space of the plan becomes a room 'Помещение N' (name to be confirmed)."""
     if d.get("rooms") or not d.get("walls"):
@@ -150,9 +256,16 @@ def _openings(d, P, log):
     ops = d.get("openings", [])
     used = {}
     for o in ops:
-        m = re.match(r"^(ОК|ДБ|Д)-(\d+)$", str(o.get("mark", "")))
+        m = re.match(r"^(ОК|ДБ|Д|ПР)-(\d+)$", str(o.get("mark", "")))
         if m:
             used[m.group(1)] = max(used.get(m.group(1), 0), int(m.group(2)))
+    for o in ops:                                  # passages: ПР-n, no opening type (no infill)
+        if o.get("kind") == "passage" and not re.match(r"^ПР-\d+$", str(o.get("mark", ""))):
+            used["ПР"] = used.get("ПР", 0) + 1
+            old = o["id"]
+            o["mark"] = "ПР-%d" % used["ПР"]
+            o["id"] = "%s.1" % o["mark"]
+            _rename_refs(d, old, o["id"])
     todo = [o for o in ops if not re.match(r"^(ОК|ДБ|Д|ПР)-\d+$", str(o.get("mark", ""))) and o.get("kind") != "passage"]
     if not todo:
         return
@@ -506,6 +619,10 @@ def questions(d, P, rest):
     for o in d.get("openings", []):
         if o.get("check"):
             out.append("%s: тип и ширина %d определены автоматически по разрыву стены - проверить по исходнику" % (o["id"], o["w"]))
+    auto = [r["name"] for r in d.get("rooms", []) if r.get("auto")]
+    if auto:
+        out.append("помещения %s найдены по контуру стен - назвать их (кухня, санузел, прихожая, спальня...): от этого "
+                   "зависят отделка, свет, розетки" % ", ".join("«%s»" % n for n in auto))
     lv = d.get("levels", {})
     if d.get("_todo") or d.get("_draft"):
         out.append("высота потолка %d и плиты %d приняты по умолчанию - уточнить замером" % (lv.get("ceiling", 0), lv.get("slab", 0)))
