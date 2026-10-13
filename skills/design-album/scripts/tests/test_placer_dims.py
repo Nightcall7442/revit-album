@@ -77,3 +77,23 @@ def test_side_rows(urgench):
     from sdalbum import dims
     assert dims.side_rows(urgench, "T") == 2          # entrance door on the top facade
     assert dims.side_rows(urgench, "R") == 1
+
+
+def test_short_value_never_written_across_own_extension_lines():
+    """'50' of a 50-mm segment at 1:25 - when the raised / outside places are taken, it went between the extension
+    lines on the object side (unreadable, lesson L-058). It must take any place clear of its extension lines."""
+    from shapely.geometry import LineString, box
+    from sdalbum import dims as DM
+    from sdalbum import gfx as S
+    from sdalbum.placer import Occ
+    S.ensure_fonts()
+    doc = S.new_doc()
+    blk = doc.blocks.new("T")
+    k = 25
+    occ = Occ()
+    occ.add(box(-400, 450, 30, 900), "x")            # 'before' and the raised rows above the short segment are taken
+    occ.add(box(-100, 560, 400, 900), "x")
+    out = DM.chain(blk, [0, 50, 1000], 500, 0, k, occ)
+    g50 = out[0]
+    for v in (0, 50):
+        assert not g50.intersects(LineString([(v, 20), (v, 530)]))

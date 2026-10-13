@@ -281,6 +281,8 @@ def check_layout(doc, layout, framed=True):
             core = box(x0 + 0.08 * w, y0 + 0.3 * h, x1 - 0.08 * w, y1 - 0.3 * h) if w >= h else \
                 box(x0 + 0.3 * w, y0 + 0.08 * h, x1 - 0.3 * w, y1 - 0.08 * h)
             n = 0
+            cross = []
+            zone = box(x0, y0, x1, y1).buffer(2.5)
             for j in ltree.query(core):
                 ln, col, lay, hnd, od = dark_lines[int(j)]
                 seg = ln.intersection(core)
@@ -291,9 +293,14 @@ def check_layout(doc, layout, framed=True):
                     if not m.is_empty and m.contains(seg):
                         continue
                 n += 1
+                near = ln.intersection(zone)
+                for part in (near.geoms if hasattr(near, "geoms") else [near]):
+                    if part.geom_type == "LineString" and part.length > 0:
+                        cross.append([(round(x, 2), round(y, 2)) for x, y in part.coords])
             if n:
                 issues.append(dict(code="LINE_THROUGH_TEXT", level="warning", where=_c(t["bbox"]),
-                                   msg="через «%s» проходит линия (%d)" % (_s(t["content"]), n)))
+                                   msg="через «%s» проходит линия (%d)" % (_s(t["content"]), n),
+                                   bbox=[round(v, 2) for v in t["bbox"]], cross=cross))
     return issues, rec
 
 

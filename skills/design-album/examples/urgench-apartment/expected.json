@@ -6,7 +6,7 @@
   "DOORS_CLASH",
   "DOOR_HITS_FURNITURE"
  ],
- "max_sheet_warnings": 35,
+ "max_sheet_warnings": 10,
  "titles": [
   "Обмерный план",
   "План монтажа перегородок",

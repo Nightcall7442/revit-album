@@ -248,3 +248,31 @@ def test_multipoint_group_wired_once(make_project):
     P = make_project(mut)
     runs = [r for r in wiring_runs(P) if r["switch"] in ("В1", "В3")]
     assert len(runs[0]["pts"]) == 7 and len(runs[1]["pts"]) == 2
+
+
+@pytest.mark.slow
+def test_sheet_heals_lines_through_texts(tmp_path):
+    """Self-healing (lesson L-061): a sheet whose own QA finds lines through texts is drawn again with those lines as
+    obstacles; the Urgench lighting plan had 5 such texts (wiring through bindings) and must come out clean."""
+    from conftest import URGENCH
+    from sdalbum import album, model, qa
+    P = model.load(URGENCH)
+    counts = []
+    for heal in (False, True):
+        A = album.Album(P, str(tmp_path / str(heal)), ["lighting"])
+        A.build(heal=heal)
+        rep = qa.check_doc(A.doc)
+        counts.append(sum(1 for v in rep.values() for i in v if i["code"] == "LINE_THROUGH_TEXT"))
+        assert not [i for v in rep.values() for i in v if i["level"] == "error"]
+    assert counts[0] >= 3 and counts[1] == 0, counts
+
+
+@pytest.mark.slow
+def test_ceiling_zone_chain_not_on_wall(tmp_path):
+    """A 130-mm curtain niche at a wall was dimensioned on top of the wall (lesson L-059)."""
+    from conftest import URGENCH
+    from sdalbum import album, model, qa
+    A = album.Album(model.load(URGENCH), str(tmp_path), ["ceilings"])
+    A.build()
+    rep = qa.check_doc(A.doc)
+    assert not [i for v in rep.values() for i in v if i["code"] in ("LINE_THROUGH_TEXT", "TEXT_ON_WALL")], rep

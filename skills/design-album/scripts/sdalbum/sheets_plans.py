@@ -766,18 +766,35 @@ def ceilings(A, no, title, scale):
     for n in P.nodes:                   # node callouts sit where the designer put them: register before any text
         if n.get("at"):
             occ.add(Y.callout(sp, tuple(n["at"]), n["num"], node_sheet(A) or "", k), "sym")
-    # dims of zones
+    # dims of zones: each chain on the side of the zone that is free and inside the rooms (a 130 niche at a wall
+    # was dimensioned on top of the wall - lesson L-059)
+    inside = unary_union([r["shp"] for r in P.rooms]).buffer(-0.3 * k)
+
+    def zone_chain(vals, horiz, cands, ext_of):
+        best = None
+        for pos in cands:
+            band = (LineString([(vals[0] - 2 * k, pos), (vals[1] + 2 * k, pos)]) if horiz else
+                    LineString([(pos, vals[0] - 2 * k), (pos, vals[1] + 2 * k)])).buffer(2.2 * k)
+            sc_ = occ.overlap(band) + 50.0 * band.difference(inside).area
+            if best is None or sc_ < best[0]:
+                best = (sc_, pos)
+        DM.chain(sp, vals, best[1], ext_of(best[1]), k, occ, vertical=not horiz)
     for z in zones:
         g = Polygon(z["poly"])
         x0, y0, x1, y1 = g.bounds
+        d = sc(A, 300)
+        wide = [y1 + d, y0 - d, (y0 + y1) / 2.0]
+        tall = [x1 + d, x0 - d, (x0 + x1) / 2.0]
+        ext_y = lambda pos, y0=y0, y1=y1: y1 if pos >= y1 else y0 if pos <= y0 else pos
+        ext_x = lambda pos, x0=x0, x1=x1: x1 if pos >= x1 else x0 if pos <= x0 else pos
         if (x1 - x0) < (y1 - y0):
-            DM.chain(sp, [x0, x1], y1 + sc(A, 300), y1, k, occ)
+            zone_chain([x0, x1], True, wide, ext_y)
             if z.get("kind") != "niche":
-                DM.chain(sp, [y0, y1], x1 + sc(A, 300), x1, k, occ, vertical=True)
+                zone_chain([y0, y1], False, tall, ext_x)
         else:
-            DM.chain(sp, [y0, y1], x1 + sc(A, 300), x1, k, occ, vertical=True)
+            zone_chain([y0, y1], False, tall, ext_x)
             if z.get("kind") != "niche":
-                DM.chain(sp, [x0, x1], y1 + sc(A, 300), y1, k, occ)
+                zone_chain([x0, x1], True, wide, ext_y)
     # level marks per room and zone tags
     for rm in P.rooms:
         lvl = rm.get("ceiling_level", types[0].get("level", P.ceiling))
@@ -1111,7 +1128,7 @@ def sockets(A, no, title, scale):
         label_near(A, sp, occ, ("%s, низ %+.3f" % (p.get("name", "ЩК"), p.get("bottom", 1500) / 1000.0)).replace(".", ","), (x, y), h=1.8,
                    bold=True, dists=(4, 6, 8, 11))
     # bindings first (they must sit at their wall), then labels, which have room to move and take leaders
-    DM.edge_chains(sp, P, bind, k, occ, offsets=(sc(A, 320), sc(A, 650), sc(A, 950)))
+    DM.edge_chains(sp, P, bind, k, occ, offsets=(sc(A, 320), sc(A, 650), sc(A, 950)), exo=3.0)
     for c, cen in zip(clusters, centers):
         lab = socket_label(c)
         n = Y.NORMALS[c[0]["wall"]]
@@ -1213,7 +1230,7 @@ def plumbing(A, no, title, scale):
         wall_items = [o for o in fx["items"] if o.get("h", 1) > 0]
         if wall_items:
             pts.append((round(sum(o["x"] for o in wall_items) / len(wall_items)), round(sum(o["y"] for o in wall_items) / len(wall_items))))
-    DM.edge_chains(sp, P, pts, k, occ, offsets=(sc(A, 450), sc(A, 750), sc(A, 1050)))
+    DM.edge_chains(sp, P, pts, k, occ, offsets=(sc(A, 450), sc(A, 750), sc(A, 1050)), exo=2.6)
     # floor outlets (drains) are bound in both directions to the walls of their room (lesson L-037)
     for rm in P.rooms:
         fl = [(o["x"], o["y"]) for o in P.plumbing if o.get("h", 1) == 0 and rm["shp"].buffer(10).contains(Point(o["x"], o["y"]))]

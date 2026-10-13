@@ -211,14 +211,17 @@ class Album:
         off = (no * 60000.0 + sub * 18000.0, 0.0 if sub == 0 else -40000.0)
         self.msp.add_blockref(name, off)
         self._blocks[off] = (blk, self.cur_title)
+        from . import placer
+        placer.CUR_BLOCK = off
         return blk, off
 
     def vp(self, psp, off, window, xy, k):
         x0, y0, x1, y1 = window
         w, h = (x1 - x0) / k, (y1 - y0) / k
-        self._vps.append((off, window, self.cur_title))
+        rect = (xy[0], xy[1], xy[0] + w, xy[1] + h)
+        self._vps.append((off, window, self.cur_title, rect, k))
         S.viewport(psp, xy[0] + w / 2.0, xy[1] + h / 2.0, w, h, (off[0] + (x0 + x1) / 2.0, off[1] + (y0 + y1) / 2.0), k)
-        return (xy[0], xy[1], xy[0] + w, xy[1] + h)
+        return rect
 
     def band_free(self, need):
         """Free band under the plan viewport, left of the title block."""
@@ -236,6 +239,8 @@ class Album:
         blk, off = self.model_block(no)
         self.vp(psp, off, self.plan_win, self.plan_xy, self.plan_k)
         occ = Occ()
+        from shapely.geometry import box as _box
+        occ.bounds = _box(*self.plan_win).buffer(-0.6 * self.plan_k)
         return psp, blk, occ
 
     def title_note(self, psp, x, y, title, note, h=3.4, hn=2.4):
@@ -252,22 +257,115 @@ class Album:
         return list(o)
 
     # ------------------------------------------------------------------ build / output
-    def build(self):
-        from .placer import flush_all
-        for no, key, title, scale, fn, arg in self.sheets:
+    def build(self, heal=True):
+        """Draw every sheet. heal: a sheet whose QA finds a line through a text is drawn again with those lines as
+        obstacles for the labels (learnt from its own check, up to 2 rounds; the better version is kept)."""
+        self.healed = {}
+        for sheet in self.sheets:
+            self._draw(sheet)
+            if heal and sheet[1] not in ("cover", "letter"):
+                self._heal(sheet)
+        return self
+
+    def _draw(self, sheet, hints=None):
+        from . import placer
+        no, key, title, scale, fn, arg = sheet
+        placer.HINTS = hints or {}
+        try:
             if arg is None:
                 fn(self, no, title, scale)
             else:
                 fn(self, no, title, scale, arg)
-            flush_all()
-        return self
+            placer.flush_all()
+        finally:
+            placer.HINTS = {}
+            placer.CUR_BLOCK = None
+
+    def _sheet_qa(self, no):
+        from . import qa
+        lay = self.layouts[no]
+        issues, _ = qa.check_layout(self.doc, lay, True)
+        title = self._title_of(no)
+        issues += [i for i in self.check_clipping() if i.get("sheet") == title]
+        return issues
+
+    @staticmethod
+    def _score(issues):
+        return sum(1000 if i["level"] == "error" else 1 for i in issues)
+
+    def _heal(self, sheet, rounds=2):
+        no = sheet[0]
+        issues = self._sheet_qa(no)
+        if not any(i["code"] == "LINE_THROUGH_TEXT" for i in issues):
+            return
+        best = (self._score(issues), {}, issues)
+        hints = {}
+        for _ in range(rounds):
+            new = self._hints(no, issues)
+            if not new:
+                break
+            for off, gs in new.items():
+                hints.setdefault(off, []).extend(gs)
+            self._drop_sheet(no)
+            self._draw(sheet, {k_: list(v) for k_, v in hints.items()})
+            issues = self._sheet_qa(no)
+            sc = self._score(issues)
+            if sc < best[0]:
+                best = (sc, {k_: list(v) for k_, v in hints.items()}, issues)
+            if not any(i["code"] == "LINE_THROUGH_TEXT" for i in issues):
+                break
+        if self._score(issues) != best[0]:          # the last round was not the best one: draw the best again
+            self._drop_sheet(no)
+            self._draw(sheet, best[1])
+        self.healed[no] = dict(score=best[0], hints=sum(len(v) for v in best[1].values()))
+
+    def _hints(self, no, issues):
+        """Lines crossing texts (paper mm) -> obstacles in the coordinates of the block shown in that viewport."""
+        from shapely.geometry import LineString, Point
+        title = self._title_of(no)
+        vps = [v for v in self._vps if v[2] == title]
+        out = {}
+        for i in issues:
+            if i["code"] != "LINE_THROUGH_TEXT":
+                continue
+            for cs in i.get("cross", []):
+                ln = LineString(cs)
+                m = ln.interpolate(0.5, normalized=True)
+                for off, win, t, rect, k in vps:
+                    if rect[0] <= m.x <= rect[2] and rect[1] <= m.y <= rect[3]:
+                        loc = LineString([(win[0] + (x - rect[0]) * k, win[1] + (y - rect[1]) * k) for x, y in cs])
+                        out.setdefault(off, []).append(loc.buffer(0.3 * k))
+                        break
+        return out
+
+    def _title_of(self, no):
+        for n, key, title, scale, fn, arg in self.sheets:
+            if n == no:
+                return "%02d %s" % (no, title)
+        return None
+
+    def _drop_sheet(self, no):
+        """Remove a drawn sheet (layout, its model blocks, viewport records, build issues) to draw it again."""
+        title = self._title_of(no)
+        psp = self.layouts.pop(no)
+        self.doc.layouts.delete(psp.name)
+        for off, (blk, t) in list(self._blocks.items()):
+            if t != title:
+                continue
+            for e in list(self.msp.query("INSERT")):
+                if e.dxf.name == blk.name:
+                    self.msp.delete_entity(e)
+            self.doc.blocks.delete_block(blk.name, safe=False)
+            del self._blocks[off]
+        self._vps = [v for v in self._vps if v[2] != title]
+        self.issues = [i for i in self.issues if i.get("sheet") != title]
 
     def check_clipping(self, tol=2.0):
         """Every entity of a sheet block must lie completely inside one of the viewports showing that block:
         a dimension, label or symbol cut by the viewport edge is an error (CONTENT_CLIPPED)."""
         from ezdxf import bbox
         wins = {}
-        for off, w, t in self._vps:
+        for off, w, t, *_ in self._vps:
             wins.setdefault(off, []).append(w)
         out = []
         for off, (blk, title) in self._blocks.items():

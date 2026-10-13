@@ -37,6 +37,8 @@ def text_geom(s, p, h, align="MIDDLE_CENTER", rot=0.0, bold=False, pad=0.0):
 
 
 _PENDING = []
+HINTS = {}          # block offset -> [geometry]: obstacles learnt from the sheet QA of a previous build (self-healing)
+CUR_BLOCK = None    # offset of the block being drawn (set by Album.model_block)
 
 
 def flush_all():
@@ -54,6 +56,10 @@ class Occ:
         self._tree = None
         self.late = []
         _PENDING.append(self)
+        self.block = CUR_BLOCK
+        self.bounds = None          # model window shown in the viewport: nothing may be placed outside it
+        for g in HINTS.get(CUR_BLOCK, []):
+            self.add(g, "hint")
 
     def defer(self, fn):
         self.late.append(fn)
@@ -76,10 +82,12 @@ class Occ:
         return self._tree
 
     def overlap(self, g, ignore=()):
+        a = 0.0
+        if self.bounds is not None and not self.bounds.contains(g):
+            a += 1e4 + 1e3 * g.difference(self.bounds).area     # would be clipped by the viewport (CONTENT_CLIPPED)
         t = self.tree()
         if t is None:
-            return 0.0
-        a = 0.0
+            return a
         for j in t.query(g):
             j = int(j)
             if self.kinds[j] in ignore:

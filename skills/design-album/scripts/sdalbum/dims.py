@@ -15,8 +15,11 @@ def style_for(k):
     return {50: "SD50", 40: "SD40", 30: "SD30", 25: "SD25", 20: "SD20", 10: "SD10", 5: "SD5", 1: "SD1"}.get(int(round(k)), "SD50")
 
 
-def chain(sp, values, line_pos, ext_from, k, occ=None, vertical=False, merge=1.0, min_seg=1.0, register=True):
-    """Draw a chain; every text position is chosen to avoid occ. Returns list of text geoms.
+def chain(sp, values, line_pos, ext_from, k, occ=None, vertical=False, merge=1.0, min_seg=1.0, register=True, exo=None):
+    """Draw a chain; every text position is chosen to avoid occ and the chain's own extension lines.
+    exo: gap (paper mm) between the bound point and the start of its extension line (default of the style 0.8);
+    larger where the point carries a symbol (sockets, outlets) so the line never crosses the symbol or its label.
+    Returns list of text geoms.
 
     Text rules (GOST 2.307 practice): a value that fits sits centred over its segment; a value that does not fit is
     raised one row above its own segment (staggered), and only the end segments may carry the value outside the chain.
@@ -42,6 +45,10 @@ def chain(sp, values, line_pos, ext_from, k, occ=None, vertical=False, merge=1.0
         segs.append((i, a, b, s, w, fits))
     order = [x for x in segs if x[5]] + [x for x in segs if not x[5]]
     placed = {}
+    # own extension lines: a value written across them is unreadable (lesson L-058)
+    e0 = ext_from + side * (exo if exo is not None else 0.8) * k
+    e1 = line_pos + side * 1.2 * k
+    ext = [LineString([(e0, v), (e1, v)]) if vertical else LineString([(v, e0), (v, e1)]) for v in vals]
     for i, a, b, s, w, fits in order:
         mid = (a + b) / 2.0
         up1 = (mid, line_pos + side * (lift + th * 1.25))
@@ -78,6 +85,7 @@ def chain(sp, values, line_pos, ext_from, k, occ=None, vertical=False, merge=1.0
             g = text_geom(s, p, th, "MIDDLE_CENTER", rot, False, 0.2 * k)
             sc = occ.overlap(g) if occ is not None else 0.0
             sc += sum(g.intersection(pg).area for pg in placed.values())
+            sc += sum(2.0 * k * k for e in ext if g.intersects(e))
             if sc <= 1e-6:
                 best = (0, p, g)
                 break
@@ -90,7 +98,8 @@ def chain(sp, values, line_pos, ext_from, k, occ=None, vertical=False, merge=1.0
         else:
             p1, p2, base_ = (a, ext_from), (b, ext_from), (a, line_pos)
         d = sp.add_linear_dim(base=base_, p1=p1, p2=p2, angle=90 if vertical else 0, dimstyle=st, location=p,
-                              text="<>", dxfattribs={"layer": "SD_Размеры"})
+                              text="<>", dxfattribs={"layer": "SD_Размеры"},
+                              override={"dimexo": exo} if exo is not None else None)
         d.render()
     out = [placed[i] for i in sorted(placed)]
     if occ is not None and register:
@@ -196,8 +205,9 @@ def outer_chains(sp, P, k, occ, sides=("B", "L"), openings=True, axes=True, firs
     return poly
 
 
-def edge_chains(sp, P, points, k, occ, offsets=(320, 650, 950), include_ends=True):
-    """Bind points lying on room walls: one chain per wall face, parallel to it, inside the room."""
+def edge_chains(sp, P, points, k, occ, offsets=(320, 650, 950), include_ends=True, exo=None):
+    """Bind points lying on room walls: one chain per wall face, parallel to it, inside the room.
+    exo: extension lines start this far (paper mm) from the wall - clear of the symbols drawn at the points."""
     by_edge = {}
     for p in points:
         r = P.room_of_point(p, 80)
@@ -223,7 +233,7 @@ def edge_chains(sp, P, points, k, occ, offsets=(320, 650, 950), include_ends=Tru
                 best = (sc, pos)
             if sc <= 1e-6:
                 break
-        chain(sp, vals, best[1], face, k, occ, vertical=not horiz)
+        chain(sp, vals, best[1], face, k, occ, vertical=not horiz, exo=exo)
 
 
 def room_point_chains(sp, P, room, pts, k, occ, xs=None, ys=None, merge=40.0):

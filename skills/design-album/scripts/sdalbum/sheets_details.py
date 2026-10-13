@@ -402,6 +402,8 @@ def bath_plan(A, psp, no, room):
     blk, off = A.model_block(no, 0)
     occ = Occ()
     shp = room["shp"]
+    bx0, by0, bx1, by1 = shp.bounds
+    occ.bounds = box(bx0 - 950, by0 - 950, bx1 + 950, by1 + 950).buffer(-0.6 * k)     # = the viewport window below
     from . import sheets_plans as SP
     for f, g in P.floor_zones():
         part = g.intersection(shp.buffer(250, join_style=2))
