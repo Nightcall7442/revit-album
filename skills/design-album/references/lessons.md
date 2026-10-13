@@ -306,8 +306,7 @@
   стена из частей (под окном / над окном) — одна стена с окном; длинный детальный тонкий объект без стены —
   витраж (стена + окно на всю длину); помещения называются по тому, что в них стоит (унитаз — «Санузел»,
   холодильники и плиты — «Кухня», много мест — «Зал», кровать — «Спальня»).
-- Страж: test:test_wall_in_parts_around_a_window_is_one_wall_with_a_window, test:test_shop_front_closes_the_room,
-  test:test_rooms_named_by_what_stands_in_them
+- Страж: test:test_wall_in_parts_around_a_window_is_one_wall_with_a_window, test:test_shop_front_closes_the_room, test:test_rooms_named_by_what_stands_in_them
 
 ## L-064 Пузыри осей 1 и 2 наложились (стены в 215 мм друг от друга)
 - Правило: стены ближе 450 мм друг к другу — одна ось.
