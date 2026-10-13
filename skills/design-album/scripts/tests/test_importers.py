@@ -139,3 +139,19 @@ def test_hatch_with_holes_is_not_a_solid_block(tmp_path):
     d2, log, rest, qs = autofix.fix(d, str(tmp_path))
     P = model.Project(d2, str(tmp_path))
     assert len(P.rooms) == 1 and abs(P.rooms[0]["area"] - 24.0) < 0.05
+
+
+def test_gap_kind_by_what_is_drawn():
+    """Window = frame lines across the gap; door = swing arc ending on the opening; glazing + arc in the facade =
+    balcony door; nothing drawn: facade -> window, wide interior gap -> passage (lesson L-054)."""
+    from shapely.geometry import LineString, Point, box
+    from importers.dxf_plan import _gap_kind
+    g = box(1000, 0, 2000, 300)                       # gap 1000 in a horizontal wall, measured along x
+    frames = [(LineString([(1000, 140), (2000, 140)]), False), (LineString([(1000, 160), (2000, 160)]), False)]
+    arc = [(Point(1000, 300).buffer(900).exterior.intersection(box(1000, 300, 1900, 1200)), True)]
+    assert _gap_kind(g, True, frames, True, 1000) == "window"
+    assert _gap_kind(g, True, arc, True, 1000) == "door"
+    assert _gap_kind(g, True, frames + arc, True, 1000) == "balcony"
+    assert _gap_kind(g, True, [], True, 1000) == "window"
+    assert _gap_kind(box(0, 0, 1800, 300), True, [], False, 1800) == "passage"
+    assert _gap_kind(g, True, [], False, 1000) == "door"
