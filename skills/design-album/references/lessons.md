@@ -550,8 +550,10 @@
   `src`, изделия `parts`, облицовки `claddings`); элемент из невычисленного объекта, стена не по размеру своего
   объекта (> 6 мм), архитектурный объект сцены (от пола до плиты, облицовка плиткой, FloorGenerator), не попавший
   в альбом, — ошибки, статус «audit_errors»: альбом собран для проверки, заказчику не выдаётся. Стены, которые
-  агент вывел сам (ниша, стена за оборудованием, проём), — в отчёт на подтверждение.
-- Страж: test:test_a_wall_longer_than_its_source_is_an_error, test:test_an_element_built_from_an_unevaluated_object_is_an_error, test:test_scene_objects_the_album_dropped_are_errors, test:test_walls_the_agent_inferred_are_listed
+  агент вывел сам (ниша, стена за оборудованием, проём), — в отчёт на подтверждение. На каждом листе такого
+  альбома — красная строка «НЕ СВЕРЕНО СО СЦЕНОЙ 3ds Max (N) - НЕ ДЛЯ ВЫДАЧИ И СТРОИТЕЛЬСТВА» в рамке: распечатка
+  или DWG без отчёта тоже не уйдёт на стройку.
+- Страж: test:test_unverified_album_carries_a_red_line_on_every_sheet, test:test_a_wall_longer_than_its_source_is_an_error, test:test_an_element_built_from_an_unevaluated_object_is_an_error, test:test_scene_objects_the_album_dropped_are_errors, test:test_walls_the_agent_inferred_are_listed
 
 ## L-101 Истина о сцене — у 3ds Max
 - Правило: `scripts/max/sda_export.ms` (Scripting → Run Script) пишет рядом со сценой `<сцена>.sda.json` +

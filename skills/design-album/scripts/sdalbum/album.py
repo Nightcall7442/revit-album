@@ -214,6 +214,8 @@ class Album:
         name = self.cur_title.replace(".", "").replace(":", "")[:60]
         psp = self.doc.layouts.new(name)
         psp.page_setup(size=(420, 297), margins=(0, 0, 0, 0), units="mm")
+        if getattr(self, "warning", None):     # not checked against the scene: every sheet says so (L-100)
+            S.text(psp, self.warning, (412.0, 291.0), 2.6, "TOP_RIGHT", "SD_Штамп", bold=True, rgb=(190, 30, 40))
         if stamp:
             S.frame(psp)
             S.stamp(psp, self.logo_def, no, self.total, title, scale, self.info)
@@ -476,8 +478,10 @@ class Album:
         return pdf_path
 
 
-def build(project_path, out_dir, sheets=None):
+def build(project_path, out_dir, sheets=None, warning=None):
+    """warning: a red line on every sheet (the album is not checked against its 3ds Max scene - not for issue)."""
     P = M.load(project_path)
     A = Album(P, out_dir, sheets)
+    A.warning = warning
     A.build()
     return A

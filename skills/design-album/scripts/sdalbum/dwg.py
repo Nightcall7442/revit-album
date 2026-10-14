@@ -77,6 +77,11 @@ def editable_dxf(src_path, dst_path, dwg_names=False):
     for v in doc.query("VIEWPORT"):
         if v.dxf.layer not in doc.layers:
             v.dxf.layer = "VIEWPORTS"
+    sheets = [n for n in doc.layouts.names_in_taborder() if n != "Model"]
+    for n in list(sheets):                         # ezdxf's empty default tab - not a sheet of the album
+        if n.lower().startswith("layout") and not len(doc.layouts.get(n)) and len(sheets) > 1:
+            doc.layouts.delete(n)
+            sheets.remove(n)
     ren = {}
     if dwg_names:
         used = {"model"}

@@ -157,7 +157,9 @@ def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=
     if asum.get("scene"):
         AU.print_report(aud, asum)
     say("Сборка альбома...")
-    A = album.build(proj, out, sheets)
+    n_open = sum(1 for i in aud if i["level"] == "error")
+    A = album.build(proj, out, sheets, warning=(
+        "НЕ СВЕРЕНО СО СЦЕНОЙ 3ds Max (%d) - НЕ ДЛЯ ВЫДАЧИ И СТРОИТЕЛЬСТВА" % n_open) if n_open else None)
     dxf = os.path.join(out, "album.dxf")
     A.save_dxf(dxf)
     pdf = A.render_pdf(os.path.join(out, "album.pdf"), os.path.join(out, "png") if png else None)

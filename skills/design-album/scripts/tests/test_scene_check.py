@@ -364,3 +364,38 @@ def test_dwg_archive_carries_the_images_of_the_sheets(tmp_path):
     assert images_of(p) == ["item_М-1_a.png"]
     z = pack(str(tmp_path), ["album_edit.dxf", "item_М-1_a.png", "missing.png"], str(tmp_path / "a.zip"))
     assert sorted(zipfile.ZipFile(z).namelist()) == ["album_edit.dxf", "item_М-1_a.png"]
+
+
+def test_unverified_album_carries_a_red_line_on_every_sheet(tmp_path):
+    """L-100: an album with open scene-check errors is built for review only - every sheet says so in red inside
+    the frame, and the line breaks no sheet check."""
+    from conftest import STUDIO
+    from sdalbum import album, qa
+    w = "НЕ СВЕРЕНО СО СЦЕНОЙ 3ds Max (3) - НЕ ДЛЯ ВЫДАЧИ И СТРОИТЕЛЬСТВА"
+    A = album.build(STUDIO, str(tmp_path / "a"), ["cover", "measured"], warning=w)
+    names = [n for n in A.doc.layouts.names_in_taborder() if n != "Model" and len(A.doc.layouts.get(n))]
+    assert len(names) == 2
+    for n in names:
+        hits = [t for t in A.doc.layouts.get(n).query("TEXT MTEXT")
+                if "НЕ СВЕРЕНО" in (t.dxf.text if t.dxftype() == "TEXT" else t.text)]
+        assert len(hits) == 1, n
+        x, y = hits[0].dxf.insert[0], hits[0].dxf.insert[1]
+        assert 20 < x <= 415 and 5 < y <= 292, (n, x, y)
+    rep = qa.check_doc(A.doc)
+    assert not [i for v in rep.values() for i in v if i["level"] == "error"]
+    B = album.build(STUDIO, str(tmp_path / "b"), ["measured"])
+    assert not [t for n in B.doc.layouts.names_in_taborder() if n != "Model"
+                for t in B.doc.layouts.get(n).query("TEXT MTEXT")
+                if "НЕ СВЕРЕНО" in (t.dxf.text if t.dxftype() == "TEXT" else t.text)]
+
+
+def test_dwg_has_no_empty_default_tab(tmp_path):
+    """The draftsman sees only the sheets of the album: ezdxf's empty Layout1 is not carried into DWG / edit DXF."""
+    import ezdxf
+    from sdalbum.dwg import editable_dxf
+    doc = ezdxf.new("R2018")
+    doc.layouts.new("01 Обложка").add_line((0, 0), (10, 0))
+    src, dst = str(tmp_path / "a.dxf"), str(tmp_path / "b.dxf")
+    doc.saveas(src)
+    editable_dxf(src, dst, dwg_names=True)
+    assert [n for n in ezdxf.readfile(dst).layouts.names_in_taborder() if n != "Model"] == ["01 Обложка"]
