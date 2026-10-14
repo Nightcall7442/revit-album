@@ -196,8 +196,13 @@ def _auto_grid(d, base_dir, log):
                 _shift(it, dx, dy, P)
         d["separations"] = [[[a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy]] for a, b in d.get("separations", [])]
         shift_extras(d, dx, dy)
+        sh = d.setdefault("meta", {}).get("scene_shift") or [0, 0]
+        d["meta"]["scene_shift"] = [sh[0] + dx, sh[1] + dy]     # scene -> plan: the check against the 3D scene
+    # "auto": axes the agent guessed from the walls of a model - they place the origin, but are not drawn: an interior
+    # album is dimensioned in clear from the room faces (the model's outer faces are not real walls, lesson L-103)
     d["grid"] = {"x": [[str(i + 1), v + dx] for i, v in enumerate(gx)],
-                 "y": [[AXIS_LETTERS[i] if i < len(AXIS_LETTERS) else "Я%d" % i, v + dy] for i, v in enumerate(gy)]}
+                 "y": [[AXIS_LETTERS[i] if i < len(AXIS_LETTERS) else "Я%d" % i, v + dy] for i, v in enumerate(gy)],
+                 "auto": True}
     L(log, "AXES", "оси по центрам несущих стен: %s / %s; начало координат - пересечение 1/А" % (
         ", ".join(n for n, _ in d["grid"]["x"]), ", ".join(n for n, _ in d["grid"]["y"])))
 

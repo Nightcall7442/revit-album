@@ -25,12 +25,14 @@
   python3 sda.py history project.json            journal of changes
   python3 sda.py diff old.json new.json | diff project.json --since N
                                                 changes in words + sheets they touch (for the client)
-  python3 sda.py make INPUT OUT [--revit] [--target-dir "C:\\..."] [--no-propose] [--scale 50] [--no-png]
+  python3 sda.py make INPUT OUT [--survey plan.pdf|dxf|dwg] [--revit] [--target-dir "C:\\..."] [--no-propose]
+                  [--scale 50] [--no-png] [--no-dwg]
                                                 ONE COMMAND: any input (project.json / .max / .dxf / .dwg / .pdf /
                                                 photo / folder) -> fixes -> proposal by norms -> album -> QA ->
                                                 Revit (optional) -> OUT/report.md with questions for the client
   python3 sda.py import-pdf plan.pdf OUT [--page 1] [--scale 50]
                                                 vector PDF -> DXF -> draft project.json (scale from dimensions)
+  python3 sda.py dwg OUT/album.dxf [--out DIR]   editable DXF (sheet drawings exploded in model space) + DWG R2000
   python3 sda.py test                            full test-suite (must be green before delivery)
 """
 import json
@@ -263,7 +265,8 @@ def cmd_make(args):
     from sdalbum import pipeline
     rep = pipeline.make(args[0], args[1], revit="--revit" in args, target_dir=_opt(args, "--target-dir"),
                         propose_="--no-propose" not in args, png="--no-png" not in args, scale=_opt(args, "--scale", float),
-                        sheets=_opt(args, "--sheets").split(",") if "--sheets" in args else None)
+                        sheets=_opt(args, "--sheets").split(",") if "--sheets" in args else None,
+                        survey=_opt(args, "--survey"), dwg_="--no-dwg" not in args)
     print(open(os.path.join(args[1], "report.md"), encoding="utf-8").read())
     return 0 if rep["status"] == "ok" else 1
 
@@ -274,6 +277,14 @@ def cmd_import_pdf(args):
     return 0 if res["status"] == "ok" else 1
 
 
+def cmd_dwg(args):
+    from sdalbum import dwg
+    res = dwg.export(args[0], _opt(args, "--out"))
+    print("DXF для правки:", res["dxf_edit"])
+    print("DWG:", res["dwg"] or "-", "|", res["note"])
+    return 0 if res["dwg"] else 1
+
+
 def cmd_test(args):
     return subprocess.call([sys.executable, "-m", "pytest", "-q", os.path.join(HERE, "tests")] + args)
 
@@ -281,7 +292,7 @@ def cmd_test(args):
 CMDS = {"doctor": cmd_doctor, "validate": cmd_validate, "build": cmd_build, "qa": cmd_qa, "revit": cmd_revit,
         "import-max": cmd_import_max, "import-dxf": cmd_import_dxf, "test": cmd_test, "fix": cmd_fix,
         "propose": cmd_propose, "find": cmd_find, "edit": cmd_edit, "undo": cmd_undo, "history": cmd_history,
-        "diff": cmd_diff, "make": cmd_make, "import-pdf": cmd_import_pdf}
+        "diff": cmd_diff, "make": cmd_make, "import-pdf": cmd_import_pdf, "dwg": cmd_dwg}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in CMDS:

@@ -84,7 +84,8 @@ def _import(src, out, scale=None, say=print):
     raise SystemExit("формат %s не поддерживается" % ext)
 
 
-def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=None, sheets=None, say=print):
+def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=None, sheets=None, say=print,
+         survey=None, dwg_=True):
     from . import album, autofix, history, propose, qa, senior, validate
     t0 = time.time()
     os.makedirs(out, exist_ok=True)
@@ -150,6 +151,11 @@ def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=
         say("Ошибки данных - альбом не собран:")
         validate.print_report(rest)
         return rep
+    from . import audit as AU                # every element against the 3ds Max scene it came from (L-100)
+    aud, asum = AU.run(d2, out)
+    rep["audit"], rep["audit_issues"] = asum, aud
+    if asum.get("scene"):
+        AU.print_report(aud, asum)
     say("Сборка альбома...")
     A = album.build(proj, out, sheets)
     dxf = os.path.join(out, "album.dxf")
@@ -158,20 +164,34 @@ def make(src, out, revit=False, target_dir=None, propose_=True, png=True, scale=
     sheet_rep = qa.check_doc(A.doc)
     extra = A.issues + A.check_clipping()
     e, w = qa.summary(sheet_rep)
-    e += sum(1 for i in rest + extra if i["level"] == "error")
-    w += sum(1 for i in rest + extra if i["level"] == "warning")
-    json.dump(dict(sheets=sheet_rep, data=rest, build=extra, errors=e, warnings=w),
+    e += sum(1 for i in rest + extra + aud if i["level"] == "error")
+    w += sum(1 for i in rest + extra + aud if i["level"] == "warning")
+    json.dump(dict(sheets=sheet_rep, data=rest, build=extra, audit=aud, audit_summary=asum, errors=e, warnings=w),
               open(os.path.join(out, "qa.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     rep["sheets"] = ["%02d %s (%s)" % (no, title, scale_) if scale_ else "%02d %s" % (no, title) for no, key, title, scale_, fn, arg in A.sheets]
     rep["errors"], rep["warnings"] = e, w
     rep["sheet_issues"] = {k: v for k, v in sheet_rep.items() if v}
     rep["build_issues"] = extra
     rep["files"] = dict(pdf=pdf, dxf=dxf, project=proj, qa=os.path.join(out, "qa.json"))
+    if dwg_:
+        from . import dwg as DW
+        try:                                 # the studio's draftsman edits in AutoCAD: exploded DXF + DWG (L-098)
+            dres = DW.export(dxf, out)
+            rep["files"]["dxf_edit"] = dres["dxf_edit"]
+            rep["files"]["dwg_zip"] = dres["zip"]
+            if dres["dwg"]:
+                rep["files"]["dwg"] = dres["dwg"]
+            rep["notes"].append(dres["note"])
+        except Exception as ex:
+            rep["notes"].append("DWG не сделан: %s - отдан DXF" % ex)
     if revit:
         from . import model, revit as RV
         paths = RV.export(model.load(proj), os.path.join(out, "revit"), album_dxf=dxf, target_dir=target_dir)
         rep["files"]["revit"] = paths
-    rep["status"] = "ok" if e == 0 else "qa_errors"
+    if any(i["level"] == "error" for i in aud):
+        rep["status"] = "audit_errors"
+    else:
+        rep["status"] = "ok" if e == 0 else "qa_errors"
     rep["seconds"] = round(time.time() - t0)
     _write(rep, out)
     say("Готово: листов %d, ошибок %d, предупреждений %d (%d с). Отчёт: %s" % (
@@ -241,6 +261,7 @@ def _copy_assets(d, base, out):
 
 
 STATUS = {"ok": "альбом готов, ошибок нет", "qa_errors": "альбом собран, но есть ошибки проверки листов - исправить до выдачи",
+          "audit_errors": "альбом собран для проверки, но НЕ сверен со сценой 3ds Max - заказчику не выдавать (см. «Сверка со сценой»)",
           "data_errors": "ошибки в данных - альбом не собран", "digitize": "нужна оцифровка исходника",
           "needs_input": "нужен другой формат исходника"}
 
@@ -255,13 +276,31 @@ def _write(rep, out):
     f = rep.get("files") or {}
     if f:
         L += ["## Файлы", ""]
-        for k, name in (("pdf", "альбом PDF"), ("dxf", "альбом DXF (для AutoCAD)"), ("project", "рабочие данные project.json"),
+        for k, name in (("pdf", "альбом PDF"), ("dwg_zip", "архив для AutoCAD: DWG + DXF + картинки листов"),
+                        ("dwg", "альбом DWG (AutoCAD, чертежи в модели расчленены)"),
+                        ("dxf_edit", "альбом DXF для правки (то же, что DWG)"), ("dxf", "альбом DXF (исходный, чертежи блоками)"),
+                        ("project", "рабочие данные project.json"),
                         ("qa", "протокол проверки qa.json")):
             if f.get(k):
                 L.append("- %s: `%s`" % (name, os.path.relpath(f[k], rep["out"])))
         if f.get("revit"):
             L.append("- Revit: %s (инструкция - references/revit.md)" % ", ".join("`%s`" % os.path.relpath(p, rep["out"]) for p in f["revit"]))
         L.append("")
+    asum = rep.get("audit") or {}
+    if asum.get("scene"):
+        L += ["## Сверка со сценой 3ds Max", "",
+              "Объектов сцены с геометрией: %d; в альбоме использовано: %d; %s." % (
+                  asum["objects"], asum["used"], "геометрия - из выгрузки 3ds Max (sda_export.ms), всё вычислено самим 3ds Max"
+                  if asum.get("export") else "геометрия прочитана из .max без 3ds Max: точно %d, повторены правки Edit Poly %d, "
+                  "в пределах исходной формы %d, НЕ вычисляется %d" % tuple(asum["statuses"].get(k, 0) for k in ("exact", "replayed", "bound", "unknown"))),
+              ""]
+        ai = rep.get("audit_issues") or []
+        if ai:
+            L += ["| Проверка | Что не так |", "|---|---|"] + ["| %s | %s |" % (i["code"], i["msg"].replace("|", "/")) for i in ai] + [""]
+        if asum.get("unverified") and not asum.get("export"):
+            L += ["**Как снять «не проверено»:** в 3ds Max открыть сцену, Scripting → Run Script → "
+                  "`scripts/max/sda_export.ms` (из плагина); рядом со сценой появятся `<сцена>.sda.json` и `.sda.bin` - "
+                  "положить их рядом с .max и пересобрать: размеры возьмутся из вычисленной 3ds Max геометрии.", ""]
     if rep.get("notes"):
         L += ["## Исходные данные", ""] + ["- " + s for s in rep["notes"]] + [""]
     if rep.get("fixes"):

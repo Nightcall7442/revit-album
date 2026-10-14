@@ -28,15 +28,17 @@ BOX_NAME = {"install": "Короб для инсталляции подвесн�
             "column": "Облицовка колонны",
             "bar": "Каркас барной стойки",
             "seat": "Короб-основание дивана",
-            "low": "Короб ГКЛВ"}
+            "low": "Короб ГКЛВ",
+            "lining": "Фальш-стена (короб) по модели"}
 BOX_SHORT = {"install": "Короб инсталляции", "pipe": "Короб для труб", "column": "Облицовка колонны",
-             "bar": "Каркас стойки бара", "seat": "Основание дивана", "low": "Короб"}
+             "bar": "Каркас стойки бара", "seat": "Основание дивана", "low": "Короб", "lining": "Фальш-стена"}
 BOX_MAT = {"install": "ГКЛВ 2×12,5 по м/к ПН/ПС 50 (под плитку); рама инсталляции - к стене и полу",
            "pipe": "ГКЛВ 2×12,5 по м/к ПН/ПС 50; ревизионные люки 300×300 у ревизий и кранов",
            "column": "ГКЛ 2×12,5 по м/к ПН/ПС 50, углы - перфоуголок; отделка по развёртке",
            "bar": "Каркас - стальная труба 40×40, обшивка ЦСП 12 мм под облицовку плиткой (по эскизу стойки)",
            "seat": "Каркас - стальная профильная труба 40×40 и 40×20 (сварной, грунт-эмаль), обшивка ЦСП 12 мм; облицовка плиткой%s по фасаду и верху, торцы - плитка с запилом 45°",
-           "low": "ГКЛВ 2×12,5 по м/к ПН/ПС 50"}
+           "low": "ГКЛВ 2×12,5 по м/к ПН/ПС 50",
+           "lining": "ГКЛ 2×12,5 по м/к ПН/ПС 50; отделка и ниши / полки - по модели"}
 INSTALL_DEPTH = 200
 INSTALL_H = 1100
 INSTALL_MIN = 150                      # frame 120 + GKLV 2×12,5 + tile
@@ -50,9 +52,64 @@ def D(log, topic, msg, why=""):
 def decide(d, base_dir="."):
     log = []
     _boxes(d, base_dir, log)
+    _claddings(d, base_dir, log)
     _floors(d, base_dir, log)
     _finishes(d, base_dir, log)
     return log
+
+
+def _claddings(d, base_dir, log):
+    """Tile skins of the scene (a 4-mm layer on a column, the tile planes of a bar counter or of an installation wall)
+    belong to what they cover: the column, the box, the wall. Each one is recorded with its host - the album shows it
+    as the finish of that element, and the check against the scene (audit) sees that nothing was dropped."""
+    src = [b for b in d.get("_box_src") or [] if b.get("kind") == "cladding"]
+    d.pop("claddings", None)
+    if not src:
+        return
+    walls = d.get("walls", [])
+    shapes = []
+    for w in walls:
+        if w.get("poly"):
+            g = Polygon(w["poly"]).buffer(0)
+        elif w.get("rect"):
+            g = box(*w["rect"])
+        else:
+            continue
+        shapes.append((w, g))
+    out, lost = [], []
+    for c in src:
+        x0, y0, x1, y1 = c["rect"]
+        g = box(x0, y0, max(x1, x0 + 1), max(y1, y0 + 1))
+        host, kind = None, None
+        if c.get("host") == "column" and c.get("inner"):
+            host = next((w for w, _ in shapes if w.get("kind") != "box" and w.get("rect") and _same(w["rect"], c["inner"], 30)), None)
+            kind = "column" if host else None
+        if host is None:
+            cand = [(w, gg.buffer(80).intersection(g).area + (1 if gg.distance(g) <= 80 else 0)) for w, gg in shapes
+                    if w.get("kind") == "box" and gg.distance(g) <= 80]
+            if cand:
+                host = max(cand, key=lambda t: t[1])[0]
+                kind = "box"
+        if host is None:
+            near = [(w, gg.distance(g)) for w, gg in shapes if w.get("kind") != "box" and gg.distance(g) <= 40]
+            if near:
+                host = min(near, key=lambda t: t[1])[0]
+                kind = "wall"
+        rec = dict(src=c["name"], on=host["id"] if host else None, host=kind, tile=c.get("tile"), label=c.get("label", ""),
+                   z0=c.get("z0", 0), z1=c.get("z1"), rect=c["rect"])
+        out.append(rec)
+        if host is None:
+            lost.append(c["name"])
+    d["claddings"] = out
+    by = {}
+    for r in out:
+        if r["on"]:
+            by.setdefault(r["host"], []).append(r["on"])
+    what = {"column": "колонны / пилястры", "box": "короба", "wall": "стены"}
+    D(log, "Облицовки", "плиткой по модели: %s" % "; ".join("%s - %s" % (what[k], ", ".join(sorted(set(v))))
+                                                          for k, v in by.items()) +
+      ("; без основы в плане: %s" % ", ".join(lost) if lost else ""),
+      "облицовка - отделка того, что она покрывает (в сцене - отдельные объекты с FloorGenerator)")
 
 
 # ------------------------------------------------------------------ boxes
@@ -87,7 +144,7 @@ def _boxes(d, base_dir, log):
     # 2. column claddings, pipe shafts of the scene
     walls = {w["id"]: w for w in d["walls"]}
     for i, b in enumerate(src):
-        if i in used or b.get("kind") not in ("column", "pipe"):
+        if i in used or b.get("kind") not in ("column", "pipe", "lining"):
             continue
         rect = b["rect"]
         h = int(min(b["z1"] - b.get("z0", 0), P.ceiling if P.ceiling else b["z1"]))
@@ -98,10 +155,12 @@ def _boxes(d, base_dir, log):
             a_, c_ = rect[2] - rect[0], rect[3] - rect[1]
             out.append(dict(id="", kind="box", box="column", rect=rect, h=h, z0=0, source="model", check=True,
                             name="%s %d×%d" % (BOX_NAME["column"], round(a_), round(c_)), material=BOX_MAT["column"],
-                            inner=col["id"], note="колонна %s" % col["id"]))
+                            inner=col["id"], note="колонна %s" % col["id"], src=b["name"]))
         else:
-            out.append(dict(id="", kind="box", box="pipe", rect=rect, h=h, z0=0, source="model", check=True,
-                            name=BOX_NAME["pipe"], material=BOX_MAT["pipe"], note="по модели"))
+            kd = b["kind"]
+            out.append(dict(id="", kind="box", box=kd, rect=rect, h=h, z0=0, source="model", check=True,
+                            name=BOX_NAME[kd], material=BOX_MAT[kd], note="по модели", src=b["name"],
+                            **({"poly": b["poly"]} if b.get("poly") else {})))
         used.add(i)
     # 3. seating bases: a low tiled solid along a wall under a bench / sofa - a metal frame box built on site
     items = d.get("items") or []
@@ -127,7 +186,7 @@ def _boxes(d, base_dir, log):
                         check=True, name=BOX_NAME["seat"] + (" %s" % mark if mark else ""),
                         material=BOX_MAT["seat"] % ((" " + tl) if tl else ""),
                         note=("подушки - эскиз %s" % mark) if mark else "по модели",
-                        item=mark))
+                        item=mark, src=b["name"]))
         used.add(i)
         if it is not None:
             it["base_box"] = True
@@ -147,13 +206,13 @@ def _boxes(d, base_dir, log):
             continue
         out.append(dict(id="", kind="box", box="bar", poly=[[round(x), round(y)] for x, y in f["poly"]], h=int(f.get("h", 1100)),
                         z0=0, source="model", check=True, name=BOX_NAME["bar"], material=BOX_MAT["bar"],
-                        note="облицовка - по эскизу стойки"))
+                        note="облицовка - по эскизу стойки", src=f.get("source")))
     if moved_items:                             # the plan of furniture follows
         from . import items as IT
         IT._to_plan(d, M.Project(d, base_dir))
     if not out:
         return
-    order = {"install": 0, "pipe": 1, "column": 2, "seat": 3, "bar": 4, "low": 5}
+    order = {"install": 0, "pipe": 1, "column": 2, "lining": 3, "seat": 4, "bar": 5, "low": 6}
 
     def key(b):
         c = (Polygon(b["poly"]) if b.get("poly") else box(*b["rect"])).centroid
@@ -187,7 +246,7 @@ def _install(d, P, f, g, room, seg, n, q, src, ledges, used):
     qx, qy = q
     near_pt = Point(qx, qy)
     span = _span(P, room, seg, n, g)            # along-wall extent of the box
-    ev_top, rect, how = None, None, ""
+    ev_top, rect, how, names = None, None, "", []
     lg = next((x for x in ledges if box(*x["rect"]).distance(near_pt) < 250), None)
     lows = [(i, b) for i, b in enumerate(src) if b.get("kind") == "low" and box(*b["rect"]).distance(near_pt) < 250]
     if lg is not None:
@@ -204,6 +263,7 @@ def _install(d, P, f, g, room, seg, n, q, src, ledges, used):
             rect[ax] = max(rect[ax], min(nr[ax + 2], rect[ax + 2]))
         ev_top = lg["z1"]
         how = "по модели (выступ под окном %s)" % lg["name"]
+        names.append(lg["name"])
     if lows:
         tops = [b["z1"] for _, b in lows]
         ev_top = max([ev_top or 0] + tops)
@@ -211,8 +271,9 @@ def _install(d, P, f, g, room, seg, n, q, src, ledges, used):
             rr = [b["rect"] for _, b in lows]
             rect = [min(r[0] for r in rr), min(r[1] for r in rr), max(r[2] for r in rr), max(r[3] for r in rr)]
             how = "по модели (%s)" % ", ".join(b["name"] for _, b in lows[:2])
-        for i, _ in lows:
+        for i, b_ in lows:
             used.add(i)
+            names.append(b_["name"])
     moved = False
     if rect is None:                            # not in the model: the norm box in front of the wall, the WC moves out
         dep = INSTALL_DEPTH
@@ -265,7 +326,8 @@ def _install(d, P, f, g, room, seg, n, q, src, ledges, used):
         short.append("верх - по низу окна")
     short.append("рама h 820" if h < 1050 else "рама h 1120")
     b = dict(id="", kind="box", box="install", rect=rect, h=h, z0=0, source="model" if how.startswith("по модели") else "proposed",
-             check=True, name=BOX_NAME["install"], material=BOX_MAT["install"], note=", ".join(short))
+             check=True, name=BOX_NAME["install"], material=BOX_MAT["install"], note=", ".join(short),
+             **({"src": " + ".join(names)} if names else {}))
     msg = "короб инсталляции в «%s»: h=%d, глубина %d %s" % (room["name"], h, dep, how)
     return b, msg, "; ".join(why)
 
@@ -341,7 +403,7 @@ def _floors(d, base_dir, log):
             continue
         out.append(dict(id="П%d" % (len(out) + 1), material="%s %s%s" % (mat, "×".join(map(str, tile)), (", " + cls_txt) if cls_txt else ""),
                         pattern="tile", tile=tile, rooms=[r["name"] for r in rooms], layers=layers, reserve=0.1,
-                        proposed=True, source="model"))
+                        proposed=True, source="model", src=base["name"]))
     for r in other:                               # not under the model's floor: by its use
         wet = r.get("cls") == "wet"
         out.append(dict(id="П%d" % (len(out) + 1), material="Керамогранит 600×600%s" % (", R10" if public else ""), pattern="tile",
@@ -356,9 +418,17 @@ def _floors(d, base_dir, log):
         if host["shp"].intersection(g).area < 0.2e6:
             continue
         wet = host.get("cls") in ("wet", "bar")
-        t = z.get("tile") or z.get("tile_name") or [100, 100]
+        t = z.get("tile") or z.get("tile_name")
+        if not t:                                 # the model does not say the format: never invent one (L-104)
+            lbl = z.get("label") or ("" if _generic(z.get("material")) else z.get("material"))
+            out.append(dict(id="П%d" % (len(out) + 1), pattern="model", polys=z["polys"], reserve=0.1, proposed=True,
+                            material="Покрытие зоны по 3D-модели%s (формат и раскладка - уточнить)" % (" «%s»" % lbl if lbl else ""),
+                            source="model", src=z["name"], layers="по образцу дизайнера; уровень - заподлицо с основным покрытием",
+                            zone="зона по модели в «%s»" % host["name"]))
+            zones.append("%s - зона без формата в модели (%s м²) - уточнить" % (out[-1]["id"], ("%.1f" % z["area"]).replace(".", ",")))
+            continue
         out.append(dict(id="П%d" % (len(out) + 1), material=_mat_label(z, small=True) + " " + "×".join(map(str, t)), pattern="tile",
-                        tile=t, polys=z["polys"], origin=z.get("origin"), reserve=0.15, proposed=True, source="model",
+                        tile=t, polys=z["polys"], origin=z.get("origin"), reserve=0.15, proposed=True, source="model", src=z["name"],
                         layers="Плитка 8-10 мм; плиточный клей; %sстяжка (уровень - заподлицо с основным покрытием)" % (
                             "обмазочная гидроизоляция; " if wet else ""),
                         zone="полоса / зона по модели в «%s»" % host["name"]))
@@ -383,6 +453,11 @@ def _floors(d, base_dir, log):
         for f in out:
             if f.get("source") == "model" and not f.get("polys"):
                 f["note"] = "формат по раскладке модели; в названии материала %s - подтвердить при заказе" % "×".join(map(str, tn))
+
+
+def _generic(name):
+    from importers.scene_surfaces import generic_material
+    return generic_material(name or "")
 
 
 def _mat_label(z, small=False):

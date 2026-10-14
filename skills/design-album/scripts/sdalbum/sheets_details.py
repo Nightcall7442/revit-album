@@ -355,6 +355,7 @@ def elevation_sheet(A, no, title, scale, arg):
     x0 = 24.0
     if arg["plan"]:
         x0 = bath_plan(A, psp, no, arg["room"]) + 10
+    top_ = 0.0
     for i, e in enumerate(arg["elevs"]):
         blk, off = A.model_block(no, i + 1)
         occ = Occ()
@@ -363,6 +364,7 @@ def elevation_sheet(A, no, title, scale, arg):
         r = A.vp(psp, off, win, (x0, 64.0), k)
         A.title_note(psp, r[0] + 4, r[3] + 1.5, "Развёртка %s" % e.get("label", ""), "1:25")
         x0 = r[2] + 6
+        top_ = max(top_, r[3])
     if not arg["plan"] and any(e.get("feature") for e in arg["elevs"]):
         _key_plan(A, psp, no, arg["elevs"])
     # right part / below: materials + notes on the last sheet of a group
@@ -370,10 +372,12 @@ def elevation_sheet(A, no, title, scale, arg):
     if arg["last"]:
         free_x = max(x0, 250.0)
         if 412 - free_x >= 85:
-            col = Column(A, psp, x=free_x, top=COL_TOP_D, width=412 - free_x)
+            col = Column(A, psp, x=free_x, top=COL_TOP_D, width=412 - free_x, spill=[])
             _group_tables(A, col, arg)
         else:
-            col = Column(A, psp, x=24.0, top=58.0, width=150.0, bottom=8.0)
+            # no room on the right: under the elevations (left of the title block), then above them
+            col = Column(A, psp, x=24.0, top=58.0, width=150.0, bottom=8.0,
+                         spill=[(24.0, COL_TOP_D, 190.0, top_ + 12.0), (220.0, COL_TOP_D, 190.0, top_ + 12.0)])
             _group_tables(A, col, arg, compact=True)
 
 

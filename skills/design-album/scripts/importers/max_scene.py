@@ -17,6 +17,7 @@ and runs `sda.py validate`. Units: 3ds Max files do not reliably tell the system
 """
 import json
 import math
+import re
 import os
 import struct
 import sys
@@ -157,7 +158,15 @@ def guess_units(rows):
 
 def main(path, out, units=None, cut=1100.0, floor=0.0):
     import maxread as R
+    import maxeval as EV
+    import max_export as MX
     os.makedirs(out, exist_ok=True)
+    ex = MX.load(path)                       # the scene as 3ds Max evaluates it (sda_export.ms), if it was run
+    if ex is not None:
+        print("выгрузка 3ds Max найдена: %s - геометрия после модификаторов, единицы %.3g мм" % (
+            os.path.basename(MX.paths(path)[0]), ex.units_mm))
+        units = units or next((u for u, v in UNIT_MM.items() if abs(v - ex.units_mm) < 1e-6), None)
+    pending = []                             # nodes with modifiers: evaluated once the units are known
     mf = R.load(path)
     try:
         assets = R.asset_table(mf)
@@ -173,6 +182,15 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         cls = R.cls_name(base) if base is not None else None
         row = dict(idx=node.number, name=name, cls=cls, mods=R.modifiers(msh) if msh is not None else [],
                    material=R.mat_name(mat), layer=R.layer_name(lyr))
+        try:                                 # node flags (chunk 0x0960: parent, flags); 0x100000 is set on every
+            fch = node.get_first(0x0960)     # rendered object of the scenes seen - off: probably not rendered
+            fb = bytes(fch.data) if fch is not None and not isinstance(fch.data, tuple) else b""
+            if len(fb) >= 8:
+                row["flags"] = struct.unpack_from("<I", fb, 4)[0]
+                if cls not in SKIP_CLASSES and cls is not None and not row["flags"] & 0x100000:
+                    row["render_off"] = True
+        except Exception:
+            pass
         if mat is not None and assets:          # texture files name what the material is (tile, plaster, brick)
             key = id(mat)
             if key not in tex_cache:
@@ -205,15 +223,33 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                 fp = _footprint(cls, prm, W)
                 if fp:
                     row["footprint"], row["z0"], row["z1"] = fp
-            try:
-                v = R.poly_coords(base)
-                if v is not None and len(v):
-                    vw = v @ W[:3, :3].T + W[:3, 3]
+            nd = ex.match(name, W[:3, 3]) if ex is not None else None
+            if nd is not None:               # 3ds Max's own result: flags and the mesh after all modifiers
+                row["geom"] = "export"
+                row["export_h"] = nd.get("h")
+                why = ex.skipped(nd)
+                if why:
+                    row["skip"] = why
+                row["mods_on"] = ex.active_mods(nd)
+                got = ex.mesh(nd)
+                if got is not None and len(got[0]):
+                    vw, ftri = got
                     row["bbox"] = [vw.min(0).tolist(), vw.max(0).tolist()]
-                    row["nverts"] = int(len(v))
-                    meshes[row["idx"]] = (name, vw, R.poly_faces(base))
-            except Exception as ex:
-                row["err"] = repr(ex)
+                    row["nverts"] = int(len(vw))
+                    meshes[row["idx"]] = (name, vw, ftri)
+                    row.pop("footprint", None)   # the mesh is the truth, not the primitive
+            else:
+                try:
+                    v = R.poly_coords(base)
+                    if v is not None and len(v):
+                        vw = v @ W[:3, :3].T + W[:3, 3]
+                        row["bbox"] = [vw.min(0).tolist(), vw.max(0).tolist()]
+                        row["nverts"] = int(len(v))
+                        meshes[row["idx"]] = (name, vw, R.poly_faces(base))
+                except Exception as e_:
+                    row["err"] = repr(e_)
+                if row.get("mods") and msh is not None:
+                    pending.append((row, msh, base, cls, W))
             if "FloorGenerator" in (row.get("mods") or []):
                 fg = R.modifier_params(msh, "FloorGenerator")       # tile length (0) / width (4), scene units
                 if fg.get(0) and fg.get(4):
@@ -235,15 +271,36 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                     pw = [(p @ W[:3, :3].T + W[:3, 3], cl) for p, cl in lines]
                     row["lines"] = [dict(p=[[float(q[0]), float(q[1])] for q in p], closed=cl) for p, cl in pw]
                     row["lines_z"] = float(np.mean([p[:, 2].mean() for p, _ in pw]))
-            if row.get("mods") and "bbox" not in row:
-                row["note"] = "геометрия не читается: модификаторы (%s) не вычисляются - смотреть параметры примитива" % (
-                    ", ".join(row["mods"]))
         rows.append(row)
     u = units
     H = None
     if not u:
         u, H = guess_units(rows)
+    else:
+        _, H = guess_units(rows)
     k = UNIT_MM[u]
+    for row, msh, base, cls, W in pending:  # what the modifiers did, without 3ds Max (L-099)
+        try:
+            evr = EV.evaluate(msh, R, base=base, cls=cls, W=W, unit_mm=k)
+        except Exception as e_:
+            evr = dict(status="unknown", notes=["модификаторы не разобраны (%r)" % (e_,)], verts=None)
+        row["geom"] = evr["status"]
+        row["geom_notes"] = evr["notes"]
+        if evr.get("verts") is not None:
+            vw = evr["verts"] @ W[:3, :3].T + W[:3, 3]
+            if row.get("footprint"):
+                from shapely.geometry import MultiPoint
+                hull = MultiPoint([(float(a), float(b)) for a, b in vw[:, :2]]).convex_hull
+                row["footprint"] = [list(c) for c in list(hull.exterior.coords)[:-1]] if hull.geom_type == "Polygon" else row["footprint"]
+                row["z0"], row["z1"] = float(vw[:, 2].min()), float(vw[:, 2].max())
+                row["replayed"] = True
+        if evr["status"] == "unknown":
+            row["note"] = "геометрия не проверена: %s - нужна выгрузка 3ds Max (scripts/max/sda_export.ms)" % (
+                "; ".join(evr["notes"][-3:]) or ", ".join(row.get("mods") or []))
+    for row in rows:
+        if row.get("mods") and "bbox" not in row and not row.get("footprint") and row.get("class") not in SKIP_CLASSES \
+                and row.get("geom") != "export" and "note" not in row:
+            row["note"] = "геометрия не читается: модификаторы (%s) не вычисляются" % ", ".join(row["mods"])
     # convert to mm
     for r in rows:
         if r.get("bbox"):
@@ -261,7 +318,8 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
             for ln in r["lines"]:
                 ln["p"] = [[round(x * k, 1), round(y * k, 1)] for x, y in ln["p"]]
             r["lines_z"] = round(r["lines_z"] * k, 1)
-    json.dump(dict(source=os.path.basename(path), units=u, unit_mm=k, storey_guess=H, nodes=rows),
+    json.dump(dict(source=os.path.basename(path), units=u, unit_mm=k, storey_guess=H, nodes=rows,
+                   export=os.path.basename(MX.paths(path)[0]) if ex is not None else None),
               open(os.path.join(out, "inventory.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     # sections
     cuts = {"floor": floor + 250.0, "cut": floor + cut, "ceiling": None}
@@ -285,9 +343,10 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         _plot(rows, sec[key], os.path.join(out, "plan_%s.png" % key), "%s: z = %.0f мм" % (key, sec[key]["h"]))
     _summary(rows, u, H, sec, os.path.join(out, "inventory.md"), path)
     slab = H * k if H and H * k > 2000 else None      # wall height of the scene = floor-to-slab
-    d = _draft(rows, os.path.join(out, "draft_project.json"), ceil, slab)
-    _surfaces(rows, meshes, k, d, out)
-    _items(rows, meshes, k, d, out)
+    live = [r for r in rows if not r.get("skip")]       # hidden / not rendered objects are not in the project
+    d = _draft(live, os.path.join(out, "draft_project.json"), ceil, slab)
+    _surfaces(live, meshes, k, d, out)
+    _items(live, meshes, k, d, out)
     print("units:", u, "(guess from storey %s)" % (round(H, 1) if H else "-") if not units else "")
     print("nodes:", len(rows), " meshes:", len(meshes), " ->", out)
 
@@ -392,7 +451,20 @@ def _surfaces(rows, meshes, k, d, out):
     from importers import scene_surfaces as SS
     try:
         fl = SS.floors(rows, meshes, k)
-        bx = SS.boxes(rows, d.get("walls", []), d.get("_ledges", []))
+        outl = {}                            # plan outlines of tiled full-height solids (pipe boxes are not rectangles)
+        for r in rows:
+            if r.get("idx") in meshes and r.get("bbox") and (re.search(r"_FG\d", r.get("name") or "")
+                                                             or SS.tex_info(r).get("kind") == "tile"):
+                (x0, y0, z0), (x1, y1, z1) = r["bbox"]
+                if z1 - z0 >= 2000 and z0 < 100:
+                    _, vw, faces = meshes[r["idx"]]
+                    try:
+                        pg = SS.outline(np.asarray(vw, float) * k, faces, z0 + (z1 - z0) / 2.0)
+                    except Exception:
+                        pg = None
+                    if pg:
+                        outl[r["name"]] = pg
+        bx = SS.boxes(rows, d.get("walls", []), d.get("_ledges", []), outlines=outl)
         wm = SS.wall_materials(rows, d.get("walls", []))
     except Exception as ex:                  # the album is still built: floors and boxes by norms
         print("surfaces: не собраны (%r)" % (ex,))

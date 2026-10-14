@@ -62,6 +62,10 @@ def reg_swings(A, occ):
 
 
 def outer(A, sp, occ, sides=("B", "L"), openings=True):
+    if A.P.grid.get("auto"):
+        # axes guessed by the agent and the outer faces of a model's walls are not dimensions anyone can build by:
+        # the plan is dimensioned in clear from the room faces (measured plan), lesson L-103
+        return
     k = A.plan_k
     axes = bool(A.P.grid.get("x"))
     if axes:
@@ -218,10 +222,10 @@ def measured(A, no, title, scale):
     rows = []
     from shapely.ops import polylabel
     for i, (g, rms) in enumerate(P.existing_spaces()):
-        tag = ("пом. " + ", ".join(r["num"] for r in rms)) if rms else "пространство %d" % (i + 1)
-        seeds = [polylabel(r["shp"], 10) for r in rms] or [polylabel(g, 10)]
+        space_tag = ("пом. " + ", ".join(r["num"] for r in rms)) if rms else "пространство %d" % (i + 1)
+        seeds = [(polylabel(r["shp"], 10), "%s «%s»" % (r["num"], r["name"])) for r in rms] or [(polylabel(g, 10), space_tag)]
         done = {"h": [], "v": []}
-        for c in seeds:
+        for c, tag in seeds:
             for horiz in (True, False):
                 key = "h" if horiz else "v"
                 best = None
@@ -263,8 +267,9 @@ def measured(A, no, title, scale):
     spaces = [g for g, _ in P.existing_spaces()]
     out_ext = outline.exterior
     items = [(P.open_shape[o["id"]], o) for o in P.openings
-             if o["wall"] in ex_walls and P.open_shape[o["id"]].distance(out_ext) > 5]
+             if o["wall"] in ex_walls and (P.grid.get("auto") or P.open_shape[o["id"]].distance(out_ext) > 5)]
     items += [(g, None) for g in getattr(P, "passages", [])]
+    faces_ = {}
     for rect, o in items:
         x0, y0, x1, y1 = rect.bounds
         vert = (x1 - x0) < (y1 - y0)                    # opening in a vertical wall: width along y
@@ -287,9 +292,9 @@ def measured(A, no, title, scale):
             continue
         _, face, sg, lo, hi = best
         a_, b2 = (y0, y1) if vert else (x0, x1)
-        vals = sorted(set([round(lo), round(a_), round(b2), round(hi)]))
-        pos = face + sg * sc(A, 420)
-        DM.chain(sp, vals, pos, face, k, occ, vertical=vert)
+        key = (vert, round(face), sg, round(lo), round(hi))   # every opening of one wall face: ONE chain
+        grp = faces_.setdefault(key, set([round(lo), round(hi)]))
+        grp.update([round(a_), round(b2)])
         if o is None:
             bh = [z.get("bottom") for z in P.ceilings.get("zones", []) if z.get("bottom")
                   and Polygon(z["poly"]).buffer(5).contains(rect.centroid)]
@@ -297,10 +302,14 @@ def measured(A, no, title, scale):
             c = rect.centroid
             label_near(A, sp, occ, s_.replace(".", ","), (c.x, c.y), h=1.8, dists=(4.0, 6.0, 8.0, 11.0),
                        rot=90 if vert else 0, bold=True)
+    for (vert, face, sg, lo, hi), vals in faces_.items():
+        DM.chain(sp, sorted(vals), face + sg * sc(A, 420), face, k, occ, vertical=vert, merge=20)
     # thickness of interior bearing walls
     for w in P.walls:
         if w["kind"] != "existing":
             continue
+        if P.grid.get("auto") and w["shape"].exterior.distance(outline.exterior) < 1:
+            continue                     # a model's outer wall / pilaster: its thickness is the modeller's, not a size
         g = w["shape"]
         x0, y0, x1, y1 = g.bounds
         if not outline.buffer(-5).contains(g.centroid) or g.buffer(5).difference(P.shell).area < 1:
@@ -556,7 +565,8 @@ def _free_side(occ, g, d, k):
 
 
 BOX_SHORT = {"install": "Короб инсталляции", "pipe": "Короб для труб", "column": "Облицовка колонны",
-             "bar": "Каркас барной стойки", "seat": "Короб-основание дивана (м/к, плитка)", "low": "Короб ГКЛВ"}
+             "bar": "Каркас барной стойки", "seat": "Короб-основание дивана (м/к, плитка)", "low": "Короб ГКЛВ",
+             "lining": "Фальш-стена (короб)"}
 
 
 def box_label(b):
@@ -706,6 +716,8 @@ def draw_floor_fill(A, sp, joints=True, tint=False):
                     continue
                 org, _ = Y.tile_origin(P, rm["name"], part)
                 S.grid_lines(sp, part, tw_ * step, th_ * step, origin=org, rgb=jrgb)
+        elif f.get("pattern") == "model":
+            continue                       # a covering of the model whose format is not known: no invented joints
         else:
             pl = f.get("plank", [1300, 160])
             Y.plank_lines(sp, g, plank_w=pl[1], plank_l=pl[0], along=f.get("along", "y"),
@@ -819,8 +831,8 @@ def floors(A, no, title, scale):
             if mark and part.buffer(5).contains(Point(mark)):
                 occ.add(Y.start_mark(sp, mark, k), "sym")
     for f, g in zones:
-        if f.get("pattern") == "tile":
-            continue
+        if f.get("pattern") in ("tile", "model"):
+            continue                              # (a covering without a known format has no laying direction)
         for gg in (g.geoms if hasattr(g, "geoms") else [g]):
             if gg.area < 4e6:
                 continue
@@ -842,8 +854,11 @@ def floors(A, no, title, scale):
             continue
         big = max((g.geoms if hasattr(g, "geoms") else [g]), key=lambda q: q.area)
         c = big.representative_point()
-        tw_, th_ = f.get("tile", [600, 600])
-        tag_near(A, sp, occ, "%s  %d×%d" % (f["id"], tw_, th_), (c.x, c.y), h=1.7, bold=True)
+        if f.get("tile"):
+            tw_, th_ = f["tile"]
+            tag_near(A, sp, occ, "%s  %d×%d" % (f["id"], tw_, th_), (c.x, c.y), h=1.7, bold=True)
+        else:                                     # no format in the model: none is invented (L-104)
+            tag_near(A, sp, occ, "%s  формат - уточнить" % f["id"], (c.x, c.y), h=1.7, bold=True)
     outer(A, sp, occ, sides=("B", "L"), openings=False)
     col = Column(A, psp)
 
@@ -853,7 +868,7 @@ def floors(A, no, title, scale):
         def fn(psp_, cx, cy):
             pts = [(cx - 7, cy - 2.2), (cx + 7, cy - 2.2), (cx + 7, cy + 2.2), (cx - 7, cy + 2.2)]
             S.fill(psp_, pts, rgb, "SD_Таблицы")
-            n_ = 7 if f.get("pattern") == "tile" and min(f.get("tile", [600])) <= 150 else 4
+            n_ = 7 if f.get("pattern") == "tile" and min(f.get("tile", [600])) <= 150 else 0 if f.get("pattern") == "model" else 4
             for i in range(1, n_):
                 S.line(psp_, (cx - 7 + i * 14.0 / n_, cy - 2.2), (cx - 7 + i * 14.0 / n_, cy + 2.2), "SD_Таблицы", _darker(rgb), 9)
             if n_ == 7:
@@ -866,7 +881,7 @@ def floors(A, no, title, scale):
     items += [(_lg_line(BRONZE, 70), "Стык покрытий: профиль-порог в створе двери / разделительный профиль зоны")]
     if any(f.get("pattern") == "tile" for f in P.floors):
         items.append((_lg_sym(lambda p, cx, cy: Y.start_mark(p, (cx, cy), 1.0)), "Начало раскладки плитки"))
-    if any(f.get("pattern") != "tile" for f in P.floors):
+    if any(f.get("pattern") not in ("tile", "model") for f in P.floors):
         items.append((_lg_sym(lambda p, cx, cy: Y.arrow(p, (cx - 6, cy), (cx + 6, cy), 1.0)), "Направление укладки доски"))
     if P.wet_rooms():
         items.append((_lg_line(S.C_BLUE, 18, True), "Граница гидроизоляции"))
@@ -889,6 +904,8 @@ def floors(A, no, title, scale):
             n = int(math.ceil(ar * 1e6 / float(tw_ * th_)))
             n_tot += n
             cnt = "%d" % n
+        elif f.get("pattern") == "model":
+            fmt = "уточнить"
         elif f.get("plank"):
             fmt = "%d×%d" % tuple(f["plank"])
         where = ", ".join(f.get("rooms", [])) or f.get("zone") or "-"
@@ -923,8 +940,11 @@ def floors(A, no, title, scale):
     if any(f.get("polys") for f in P.floors):
         base.append("Плитка зон укладывается заподлицо с основным покрытием (толщину выровнять клеем), стык - "
                     "разделительный профиль из нержавеющей стали.")
-    if any(f.get("pattern") != "tile" for f in P.floors):
+    if any(f.get("pattern") not in ("tile", "model") for f in P.floors):
         base += ["Влажность стяжки под доску - не более 2 %.", "Демпферный шов 10 мм по периметру доски закрывается плинтусом."]
+    if any(f.get("pattern") == "model" for f in P.floors):
+        base.append("Покрытие зоны без формата - по 3D-модели и образцу дизайнера: материал, формат и раскладку уточнить "
+                    "до заказа (в модели не задан).")
     col.notes(A.note_lines("floors", extra + base))
 
 
@@ -1644,6 +1664,30 @@ def finishes(A, no, title, scale):
         occ.add(LineString([seg["a"], seg["b"]]).buffer(1.0 * k), "strip")
         m = ((seg["a"][0] + seg["b"][0]) / 2, (seg["a"][1] + seg["b"][1]) / 2)
         _mark_box(A, sp, occ, seg["type"], m, frgb.get(seg["type"], (90, 90, 90)))
+    # tile claddings of the model on columns / boxes / walls: the outline of what they cover in the tile type (L-102)
+    tile_t = next((t["id"] for t in types if t.get("kind") == "tile"), None)
+    if tile_t:
+        done = set()
+        for c in P.d.get("claddings") or []:
+            on = c.get("on")
+            if not on or on in done:
+                continue
+            w = P.wall_by_id.get(on) or next((b for b in P.boxes if b.get("id") == on), None)
+            if w is None or w.get("shape") is None:
+                continue
+            done.add(on)
+            g = w["shape"].buffer(sc(A, 40), join_style=2)
+            ring = g.exterior if c.get("host") != "wall" else g.exterior.intersection(
+                unary_union([r["shp"] for r in P.rooms]).buffer(sc(A, 60)))
+            for gg in (ring.geoms if hasattr(ring, "geoms") else [ring]):
+                if gg.is_empty or not hasattr(gg, "coords"):
+                    continue
+                cs = list(gg.coords)
+                for a, b in zip(cs[:-1], cs[1:]):
+                    S.line(sp, a, b, "SD_Акцент", frgb.get(tile_t, (150, 40, 50)), 70)
+            occ.add(g.exterior.buffer(0.9 * k), "strip")
+            cc = w["shape"].centroid
+            _mark_box(A, sp, occ, tile_t, (cc.x, cc.y), frgb.get(tile_t, (150, 40, 50)))
     room_tags(A, sp, occ, extra=lambda rm: "стены %s" % (rm.get("wall_finish") or F.get("by_class", {}).get(rm.get("cls"), types[0]["id"])))
     outer(A, sp, occ, sides=("B", "L"), openings=False)
     col = Column(A, psp)

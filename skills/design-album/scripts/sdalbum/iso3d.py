@@ -61,7 +61,8 @@ def render(P, out_png, elev=48, azim=-58, dpi=260):
     zones = P.floor_zones()
     if zones:
         for f, g in zones:
-            floor(g, _rgb((215, 217, 220)) if f.get("pattern") == "tile" else _rgb((214, 186, 146)))
+            floor(g, _rgb((215, 217, 220)) if f.get("pattern") == "tile" else _rgb((205, 203, 200))
+                  if f.get("pattern") == "model" else _rgb((214, 186, 146)))
     else:
         floor(unary_union([r["shp"] for r in P.rooms]), _rgb((214, 186, 146)))
     walls = unary_union([w["shape"] for w in P.walls if w["kind"] != "box"])

@@ -32,8 +32,15 @@ DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "furnit
 class Column:
     """Right-hand column of a plan sheet: stacks legend / tables / notes top-down and reports overflow."""
 
-    def __init__(self, album, psp, x=COL_X, top=COL_TOP, bottom=COL_BOTTOM, width=109.0):
+    def __init__(self, album, psp, x=COL_X, top=COL_TOP, bottom=COL_BOTTOM, width=109.0, spill=None):
         self.a, self.psp, self.x, self.y, self.bottom, self.w = album, psp, x, top, bottom, width
+        # where the column continues when it is full: free space beside the plan viewport (x, top, width, bottom)
+        self.spill = list(spill) if spill is not None else album.spill_regions()
+
+    def _fit(self, need_at):
+        """need_at(width) -> height; moves to the next free region while the current one is too short."""
+        while self.y - need_at(self.w) < self.bottom and self.spill:
+            self.x, self.y, self.w, self.bottom = self.spill.pop(0)
 
     def legend(self, items, title="Условные обозначения", rh=6.0):
         w1 = 18.0
@@ -56,9 +63,16 @@ class Column:
 
     def table(self, widths, header, rows, title=None, h=1.6, aligns=None, total=None, head_h=5.5, zebra=False,
               allow_band=True):
+        def need_at(wd):
+            return S.table_height([w * wd / float(sum(widths)) for w in widths], header, rows, h, head_h, title, total=total)
         sc = self.w / float(sum(widths))
         widths_c = [w * sc for w in widths]
-        need = S.table_height(widths_c, header, rows, h, head_h, title, total=total)
+        need = need_at(self.w)
+        if self.y - need < self.bottom and not (allow_band and self.a.band_free(need)):
+            self._fit(need_at)
+            sc = self.w / float(sum(widths))
+            widths_c = [w * sc for w in widths]
+            need = need_at(self.w)
         if self.y - need < self.bottom and allow_band and self.a.band_free(need):
             bx, by, bw = self.a.take_band(need)
             sc2 = bw / float(sum(widths))
@@ -72,13 +86,16 @@ class Column:
     def notes(self, lines):
         if not lines:
             return
-        m = S.notes(self.psp, self.x, self.y, lines, self.w - 1)
-        n = sum(max(1, math.ceil(S.tw(l, 2.1) / (self.w - 1))) for l in lines)
-        self.y -= 4.0 + n * 2.1 * 1.667 * 1.3
-        self._check()
 
-    def _check(self):
-        if self.y < self.bottom:
+        def need_at(wd):                     # the same wrapping S.notes does: the estimate is the drawing
+            return 2.0 + sum(S.wrap_count("%d. %s" % (i + 1, l), wd - 1, 2.1) for i, l in enumerate(lines)) * 2.1 * 1.667 * 1.3
+        self._fit(need_at)
+        m = S.notes(self.psp, self.x, self.y, lines, self.w - 1)
+        self.y -= need_at(self.w) + 2.0
+        self._check(gap=2.0)
+
+    def _check(self, gap=9.0):
+        if self.y + gap < self.bottom - 0.5:     # (the gap left under the last block is not content)
             self.a.issues.append(dict(code="COLUMN_OVERFLOW", level="error", sheet=self.a.cur_title,
                                       msg="правая колонка не помещается (низ %.0f мм)" % self.y))
 
@@ -123,11 +140,13 @@ class Album:
     # ------------------------------------------------------------------ layout
     def _plan_layout(self):
         x0, y0, x1, y1 = self.P.bounds
-        has_axes = bool(self.P.grid.get("x"))
+        has_axes = bool(self.P.grid.get("x")) and not self.P.grid.get("auto")
         ml = 1900 if has_axes else 1300
         mb = 2250 if has_axes else 1700
         mr, mt = 720, 880
-        if "measured" in self.sheet_keys:          # the measured plan is dimensioned on all four sides
+        if self.P.grid.get("auto"):                # dimensioned in clear inside the rooms: no outer chains
+            ml, mb, mr, mt = 650, 650, 650, 650
+        elif "measured" in self.sheet_keys:        # the measured plan is dimensioned on all four sides
             from . import dims as DM
             mr = max(mr, 450 + (DM.side_rows(self.P, "R") - 1) * 400 + 270)
             mt = max(mt, 450 + (DM.side_rows(self.P, "T") - 1) * 400 + 270)
@@ -191,6 +210,7 @@ class Album:
     # ------------------------------------------------------------------ scaffolding
     def make_sheet(self, no, title, scale, subtitle=None, header=True, stamp=True):
         self.cur_title = "%02d %s" % (no, title)
+        self._band_used = 1e9                   # the band under a plan exists on plan sheets only (plan_sheet)
         name = self.cur_title.replace(".", "").replace(":", "")[:60]
         psp = self.doc.layouts.new(name)
         psp.page_setup(size=(420, 297), margins=(0, 0, 0, 0), units="mm")
@@ -232,6 +252,17 @@ class Album:
         S.viewport(psp, xy[0] + w / 2.0, xy[1] + h / 2.0, w, h, (off[0] + (x0 + x1) / 2.0, off[1] + (y0 + y1) / 2.0), k)
         return rect
 
+    def spill_regions(self):
+        """Free space between the plan viewport of the current sheet and the right column (a tall narrow plan
+        leaves it empty): where the column continues before it would run into the title block."""
+        vps = [v for v in self._vps if v[2] == getattr(self, "cur_title", None)]
+        if not vps:
+            return []
+        r = vps[0][3]
+        x = r[2] + 8.0
+        w = COL_X - 8.0 - x
+        return [(x, COL_TOP, w, COL_BOTTOM)] if w >= 80.0 else []
+
     def band_free(self, need):
         """Free band under the plan viewport, left of the title block."""
         top = self.plan_xy[1] - 3.0 - self._band_used
@@ -243,8 +274,8 @@ class Album:
         return 24.0, top - (5.0 if True else 0.0), 158.0
 
     def plan_sheet(self, no, title, scale, subtitle):
-        self._band_used = 0.0
         psp = self.make_sheet(no, title, scale, subtitle)
+        self._band_used = 0.0
         blk, off = self.model_block(no)
         self.vp(psp, off, self.plan_win, self.plan_xy, self.plan_k)
         occ = Occ()

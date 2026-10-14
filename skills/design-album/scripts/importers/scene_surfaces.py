@@ -150,8 +150,20 @@ def floors(rows, meshes, k):
         mats = _mats(r)
         fg = "FloorGenerator" in (r.get("mods") or [])
         named = next((t for t in (tile_from_name(m) for m in mats) if t), None)
+        flat = False
         if not (fg or named):
-            continue
+            # a plane lying on the floor over >= 1 m2 is a covering too (a zone of other tiles modelled as a plane)
+            got = _rect_of(r)
+            if got is None or r.get("class") in ("SplineShape", "Line", "Text"):
+                continue
+            rc, z0_, z1_ = got
+            if not (z1_ - z0_ < 40 and -60 < z0_ < 60 and 1.0e6 <= (rc[2] - rc[0]) * (rc[3] - rc[1]) <= 400e6):
+                continue                     # (a ground plane under the whole scene is not a covering)
+            mods = r.get("mods") or []
+            if not mats or any(m in mods for m in ("Shell", "Extrude", "Sweep", "Lathe")) or r.get("render_off") \
+                    or any("выдавлив" in n for n in r.get("geom_notes") or []):
+                continue                     # a helper, the bottom of a solid, a plane extruded into a wall
+            flat = True
         z, geoms = None, []
         if r.get("lines"):
             z = r.get("lines_z", 0.0)
@@ -163,7 +175,7 @@ def floors(rows, meshes, k):
             z = (z0 + z1) / 2.0
             _, vw, faces = meshes[r["idx"]]
             geoms = _horizontal_faces(np.asarray(vw, float) * k, faces)
-        elif r.get("footprint") and r.get("class") == "Plane" and abs((r.get("z1") or 0) - (r.get("z0") or 0)) < 1:
+        elif r.get("footprint") and r.get("class") in ("Plane", "Box") and abs((r.get("z1") or 0) - (r.get("z0") or 0)) < 40:
             z = r.get("z0") or 0.0
             geoms = [Polygon(r["footprint"]).buffer(0)]
         if z is None or abs(z) > 100 or not geoms:
@@ -179,7 +191,14 @@ def floors(rows, meshes, k):
         out.append(dict(name=nm, material=next((m for m in mats if not generic_material(m)), mats[0] if mats else ""),
                         tile=[round(t) for t in tile] if tile else None, tile_name=named or ti.get("tile"), z=round(z, 1),
                         area=round(g.area / 1e6, 2), polys=polys, origin=[round(x0), round(y0)],
-                        fg=fg, label=ti.get("label", ""), tex_kind=ti.get("kind")))
+                        fg=fg, label=ti.get("label", ""), tex_kind=ti.get("kind"), plane=flat))
+    # a plane lying on the floor is a zone only inside the modelled floor (a copy parked aside is not)
+    real = [f for f in out if not f.get("plane")]
+    if real:
+        main = max(real, key=lambda f: f["area"])
+        gm = unary_union([Polygon(p).buffer(0) for p in main["polys"]])
+        out = [f for f in out if not f.get("plane") or
+               unary_union([Polygon(p).buffer(0) for p in f["polys"]]).intersection(gm).area >= 0.6 * f["area"] * 1e6]
     # one covering modelled twice (a spline and its copy on another layer): keep the first
     keep = []
     for f in sorted(out, key=lambda f: -f["area"]):
@@ -220,9 +239,35 @@ def _inter(a, b):
     return w * h if w > 0 and h > 0 else 0.0
 
 
-def boxes(rows, walls, ledges=(), skip_names=()):
+def outline(vw, faces, h):
+    """Plan outline of a mesh (mm) cut at height h: the biggest polygon of the section, or None."""
+    from shapely.geometry import LineString, Polygon
+    from shapely.ops import polygonize, unary_union
+    from importers.max_scene import section
+    segs = section(np.asarray(vw, float), faces, h)
+    if not segs:
+        return None
+    lines = unary_union([LineString([(q[0], q[1]), (q[2], q[3])]) for q in segs])
+    polys = list(polygonize(lines))
+    if not polys:
+        g = lines.buffer(3, cap_style=2, join_style=2)
+        polys = [Polygon(r) for gg in (g.geoms if hasattr(g, "geoms") else [g]) for r in gg.interiors] or \
+                [gg for gg in (g.geoms if hasattr(g, "geoms") else [g])]
+    poly = unary_union([p.buffer(0) for p in polys])
+    if poly.is_empty:
+        return None
+    big = max(poly.geoms, key=lambda q: q.area) if hasattr(poly, "geoms") else poly
+    big = big.simplify(3)
+    if big.area < 1e4:
+        return None
+    return [[round(x), round(y)] for x, y in list(big.exterior.coords)[:-1]]
+
+
+def boxes(rows, walls, ledges=(), skip_names=(), outlines=None):
     """walls: draft walls (rect, source); ledges: wall parts standing proud under a window (the wall is the part
-    above). Boxes are evidence only: the senior keeps those it can explain."""
+    above). outlines: {object name: plan polygon} of tiled solids (a slanted pipe box is not its bounding box).
+    Boxes are evidence only: the senior keeps those it can explain. Tiled skins (a 4-mm tile layer on a column, the
+    tile planes of a bar counter or an installation wall) come back as kind "cladding": a finish, not a box."""
     narrow = {lg["wall"]: lg["wall_rect"] for lg in ledges or []}
     wrects = [narrow.get(w.get("id"), w["rect"]) for w in walls if w.get("rect")]
     sources = set()
@@ -238,40 +283,64 @@ def boxes(rows, walls, ledges=(), skip_names=()):
         if got is None:
             continue
         rect, z0, z1 = got
-        if z0 > 60 or z0 < -400:
-            continue
-        z0 = max(0.0, z0)
-        h = z1 - z0
         w, d = rect[2] - rect[0], rect[3] - rect[1]
         t, L = min(w, d), max(w, d)
         mats = _mats(r)
         ti = tex_info(r)
+        clad = bool("FloorGenerator" in (r.get("mods") or []) or re.search(r"_FG\d", nm) or ti.get("kind") == "tile")
+        flat_floor = (z1 - z0) < 40 and z0 < 60       # a covering lying on the floor: floors(), not here
+        thin = t < 60 or ((z1 - z0) < 40 and z0 >= 60)  # a vertical tile plane, or a horizontal one above the floor
+        if clad and not NOT_BOX.search(nm) and thin and not flat_floor and -400 <= z0 <= 3500 and max(L, z1 - z0) >= 300:
+            # a tile plane standing or hanging: the front of a bar, the wall of an installation (above the floor too)
+            out.append(dict(name=nm, rect=[round(v) for v in rect], z0=round(max(0.0, z0)), z1=round(z1),
+                            material=next((m for m in mats if not generic_material(m)), ""), label=ti.get("label", ""),
+                            tex_kind=ti.get("kind"), tile=ti.get("tile"), parent=r.get("parent"), clad=True,
+                            kind="cladding", host=None))
+            continue
+        if z0 > 60 or z0 < -400 and not (z0 >= -1000 and z1 >= 1000):
+            continue                         # (a solid sunk below the floor by the modeller still stands on it)
+        z0 = max(0.0, z0)
+        h = z1 - z0
         base = dict(name=nm, rect=[round(v) for v in rect], z0=round(z0), z1=round(z1),
                     material=next((m for m in mats if not generic_material(m)), ""), label=ti.get("label", ""),
-                    tex_kind=ti.get("kind"), tile=ti.get("tile"), parent=r.get("parent"),
-                    clad=bool("FloorGenerator" in (r.get("mods") or []) or re.search(r"_FG\d", nm) or ti.get("kind") == "tile"))
+                    tex_kind=ti.get("kind"), tile=ti.get("tile"), parent=r.get("parent"), clad=clad)
         # a cladding around a free-standing column
-        inner = None
+        inner = skin = None
         for c in cols:
             m = (c[0] - rect[0], c[1] - rect[1], rect[2] - c[2], rect[3] - c[3])
             grow = (w - (c[2] - c[0]), d - (c[3] - c[1]))
             if all(x >= -5 for x in m) and all(40 <= g_ <= 600 for g_ in grow):
                 inner = c
                 break
+            if base["clad"] and all(x >= -5 for x in m) and all(-1 <= g_ < 40 for g_ in grow):
+                skin = c                     # a tile layer on the column itself: a finish
         if inner is not None and h >= 2000:
             out.append(dict(base, kind="column", inner=[round(v) for v in inner]))
+            continue
+        if skin is not None and h >= 1500:
+            out.append(dict(base, kind="cladding", host="column", inner=[round(v) for v in skin]))
             continue
         if NOT_BOX.search(nm) or t < 60:
             continue
         area = max(1.0, w * d)
         if any(_inter(rect, wr) >= 0.6 * area for wr in wrects):
             continue                         # the wall itself, a cladding / tile layer on it
-        if any(_inter(rect, c) > 0 for c in cols):
-            continue                         # a finish around a column (thicker claddings are taken above)
         touch = sum(1 for wr in wrects if _gap(rect, wr) <= 30)
         near = sum(1 for wr in wrects if _gap(rect, wr) <= 300)
+        if h >= 2000 and base["clad"] and 100 <= t and touch >= 1 and L > 450:
+            # a tiled full-height solid along a wall: a box hiding pipes, whatever its shape (slanted in plan),
+            # even where it runs up to a pilaster
+            pg = (outlines or {}).get(nm)
+            out.append(dict(base, kind="pipe", **({"poly": pg} if pg and len(pg) >= 3 else {})))
+            continue
+        if any(_inter(rect, c) > 0 for c in cols):
+            continue                         # a finish around a column (thicker claddings are taken above)
         if h >= 2000 and 100 <= t and L <= 450 and touch >= 1:
             out.append(dict(base, kind="pipe"))
+        elif h >= 1800 and 100 <= t <= 400 and L >= 600 and touch >= 1 and z1 >= 2000 and (
+                ti.get("kind") in ("plaster", "concrete", "brick", "loft")
+                or any(re.search(r"(?i)plaster|stucco|штукат|paint|краск|gkl|гкл|drywall", m) for m in mats)):
+            out.append(dict(base, kind="lining"))   # a plastered full-height solid on a wall: a false wall (a niche)
         elif 300 <= h <= 1500 and t <= 400 and L >= 300 and touch >= 1:
             out.append(dict(base, kind="low"))
         elif 300 <= h <= 650 and t <= 800 and L >= 1000 and near >= 1:

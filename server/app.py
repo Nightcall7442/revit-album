@@ -3,7 +3,7 @@
 
     GET  /                 page: upload form, jobs, downloads (HTTP Basic auth, password = ACCESS_TOKEN)
     POST /jobs             file(s): .max / .dxf / .dwg / .pdf / photo / project.json / .zip of a folder -> job
-    GET  /jobs/{id}        status (JSON); /jobs/{id}/files/{name} - album.pdf, album.dxf, report.md, project.json, log
+    GET  /jobs/{id}        status (JSON); /jobs/{id}/files/{name} - album.pdf, album.dwg, album_edit.dxf, album.dxf, report.md, project.json, log
     GET  /plugin           the Claude plugin built from this deployment (space-design-album-<version>.plugin)
     GET  /health           liveness
 
@@ -107,7 +107,7 @@ def _worker():
             rep = json.load(open(os.path.join(out, "report.json"), encoding="utf-8"))
         except Exception:
             pass
-        m.update(status="done" if rc == 0 and os.path.isfile(os.path.join(out, "album.pdf")) else "failed",
+        m.update(status="done" if os.path.isfile(os.path.join(out, "album.pdf")) else "failed",
                  finished=time.time(), rc=rc, errors=rep.get("errors"), warnings=rep.get("warnings"),
                  sheets=len(rep.get("sheets") or []), result=rep.get("status"))
         _save_meta(jid, m)
@@ -170,7 +170,8 @@ def job(jid: str):
 @app.get("/jobs/{jid}/files/{name}")
 def job_file(jid: str, name: str):
     d = _job_dir(jid)
-    allowed = {"album.pdf": "out", "album.dxf": "out", "report.md": "out", "report.json": "out", "project.json": "out",
+    allowed = {"album.pdf": "out", "album.dxf": "out", "album.dwg": "out", "album_edit.dxf": "out", "album_dwg.zip": "out",
+               "report.md": "out", "report.json": "out", "project.json": "out",
                "qa.json": "out", "log.txt": ""}
     if name not in allowed:
         raise HTTPException(404)
@@ -207,11 +208,14 @@ def index():
         links = ""
         if st == "done":
             links = " ".join('<a href="/jobs/%s/files/%s">%s</a>' % (jid, n, t) for n, t in
-                             (("album.pdf", "PDF"), ("album.dxf", "DXF"), ("report.md", "отчёт"), ("project.json", "project.json")))
+                             (("album.pdf", "PDF"), ("album_dwg.zip", "DWG (архив)"), ("album_edit.dxf", "DXF"), ("report.md", "отчёт"),
+                              ("project.json", "project.json")) if os.path.isfile(os.path.join(_job_dir(jid), "out", n)))
         links += ' <a href="/jobs/%s/files/log.txt">лог</a>' % jid
         info = ""
         if m.get("sheets"):
             info = "листов %s, ошибок %s, предупреждений %s" % (m.get("sheets"), m.get("errors"), m.get("warnings"))
+            if m.get("result") == "audit_errors":
+                info += "; <b>не сверен со сценой 3ds Max - см. отчёт</b>"
         rows.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
             html.escape(jid), html.escape(", ".join(m.get("files", []))), ru, info, links))
     busy = "сейчас собирается: %s" % _running["id"] if _running["id"] else "свободен"
