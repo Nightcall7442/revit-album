@@ -156,6 +156,93 @@ def guess_units(rows):
     return "mm", H
 
 
+def _full_stack(R, msh, W, row, meshes):
+    """The whole modifier stack rebuilt the way 3ds Max does it (maxgeom). True when the node's mesh is now the
+    scene's: the row gets bbox / footprint / the mesh; False leaves the node to the bounding evaluator."""
+    import maxstack as MS
+    import maxgeom as MG
+    try:
+        st = MS.read(R, msh)
+        mesh, log = MG.evaluate(st)
+    except MG.ReplayError as e_:
+        row["geom_full_fail"] = str(e_)
+        return False
+    except Exception as e_:                    # a reader / numeric failure is the same as "not rebuilt"
+        row["geom_full_fail"] = repr(e_)[:200]
+        return False
+    if not len(mesh.v) or not mesh.f:
+        row["geom"] = "replayed"
+        row["geom_notes"] = ["стек модификаторов вычислен: геометрии нет"]
+        row.pop("footprint", None)
+        row["skip"] = row.get("skip") or "пустая геометрия после модификаторов"
+        return True
+    vw = mesh.v @ W[:3, :3].T + W[:3, 3]
+    row["geom"] = "replayed"
+    notes = ["стек модификаторов вычислен как в 3ds Max: %s" % ", ".join(c for c, _ in log)] if log else []
+    if getattr(mesh, "inferred", False):
+        notes.append("перемещение после сшивки выдавливания: вершины найдены по геометрии (единственный вариант)")
+    row["geom_notes"] = notes
+    row["bbox"] = [vw.min(0).tolist(), vw.max(0).tolist()]
+    row["nverts"] = int(len(vw))
+    meshes[row["idx"]] = (row["name"], vw.astype(np.float32) if len(vw) > 20000 else vw, MG.FaceList(mesh.f, mesh.mat))
+    if row.get("footprint"):
+        from shapely.geometry import MultiPoint
+        hull = MultiPoint([(float(a), float(b)) for a, b in vw[:, :2]]).convex_hull
+        if hull.geom_type == "Polygon":
+            row["footprint"] = [list(c) for c in list(hull.exterior.coords)[:-1]]
+        row["z0"], row["z1"] = float(vw[:, 2].min()), float(vw[:, 2].max())
+        row["replayed"] = True
+    row.pop("note", None)
+    return True
+
+
+def _lattice_proxy(R, msh, W, row, meshes, k=10.0):
+    """A node whose stack could not be computed but ends with an FFD: the deformed lattice of that FFD is where 3ds Max
+    shows it (a sofa roll stretched to 4.3 m along the wall, its cage a metre away at 45 degrees) - the lattice
+    hexahedron replaces the cage as its outline. The node stays «не проверено» (L-107)."""
+    import maxstack as MS
+    import maxgeom as MG
+    try:
+        st = MS.read(R, msh)
+    except Exception:
+        return False
+    mods = [m for m in st["mods"] if m["cls"] not in MG.NEUTRAL_MODS]
+    if not mods or mods[-1]["cls"] not in ("FFD 2x2x2", "FFD 3x3x3", "FFD 4x4x4"):
+        return False
+    mod = mods[-1]
+    n = int(mod["cls"][4])
+    raw = (mod.get("chunks") or {}).get(0x0200)
+    if raw is None or mod.get("ctx_box") is None or len(raw) < 12 * n ** 3:
+        return False
+    pts = np.frombuffer(raw[:12 * n ** 3], "<f4").reshape(-1, 3).astype(float)
+    lo, hi = np.asarray(mod["ctx_box"], float)
+    order = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]
+    m1 = n - 1                                   # corner control points of the lattice (index i * n * n + j * n + k)
+    q = np.array([lo + pts[i * m1 * n * n + j * m1 * n + k * m1] * (hi - lo) for i, j, k in order])
+    C = np.asarray(mod["ctx_tm"], float)
+    obj = (np.linalg.inv(C) @ np.c_[q, np.ones(8)].T).T[:, :3]
+    vw = obj @ W[:3, :3].T + W[:3, 3]
+    if not np.all(np.isfinite(vw)):
+        return False
+    cage = row.get("bbox")                       # where the cage is, or - without one - a piece of a room
+    if cage:
+        clo, chi = np.asarray(cage[0], float), np.asarray(cage[1], float)
+        ext = np.maximum(chi - clo, 1e-6)
+        c = (vw.min(0) + vw.max(0)) / 2.0
+        if np.any(c < clo - 0.5 * ext.max()) or np.any(c > chi + 0.5 * ext.max()) or \
+                vw[:, 2].max() < clo[2] or vw[:, 2].min() > chi[2]:
+            return False
+    elif vw[:, 2].min() * k < -50.0 or vw[:, 2].max() * k > 4500.0 or np.ptp(vw, axis=0).max() * k > 6000.0:
+        return False
+    faces = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]]
+    meshes[row["idx"]] = (row["name"], vw, MG.FaceList(faces, [0] * 6))
+    row["bbox"] = [vw.min(0).tolist(), vw.max(0).tolist()]
+    row["nverts"] = 8
+    row["geom_notes"] = list(row.get("geom_notes") or []) + ["габарит - по решётке последнего FFD (сетка внутри не "
+                                                             "вычислена)"]
+    return True
+
+
 def main(path, out, units=None, cut=1100.0, floor=0.0):
     import maxread as R
     import maxeval as EV
@@ -240,12 +327,20 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                     row.pop("footprint", None)   # the mesh is the truth, not the primitive
             else:
                 try:
-                    v = R.poly_coords(base)
+                    import maxstack as MS
+                    pm = MS.editable_poly(base) if base.get_first(0x08FE) is not None else None
+                    if pm is not None and len(pm["verts"]):      # dead elements dropped (L-105)
+                        import maxgeom as MG
+                        v = pm["verts"]
+                        fl = MG.FaceList(pm["faces"], pm["mats"])
+                    else:
+                        v = R.poly_coords(base)
+                        fl = R.poly_faces(base) if v is not None else []
                     if v is not None and len(v):
                         vw = v @ W[:3, :3].T + W[:3, 3]
                         row["bbox"] = [vw.min(0).tolist(), vw.max(0).tolist()]
                         row["nverts"] = int(len(v))
-                        meshes[row["idx"]] = (name, vw, R.poly_faces(base))
+                        meshes[row["idx"]] = (name, vw, fl)
                 except Exception as e_:
                     row["err"] = repr(e_)
                 if row.get("mods") and msh is not None:
@@ -279,7 +374,10 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
     else:
         _, H = guess_units(rows)
     k = UNIT_MM[u]
-    for row, msh, base, cls, W in pending:  # what the modifiers did, without 3ds Max (L-099)
+    for row, msh, base, cls, W in pending:  # what the modifiers did, without 3ds Max (L-099, L-105)
+        full = _full_stack(R, msh, W, row, meshes)
+        if full:
+            continue
         try:
             evr = EV.evaluate(msh, R, base=base, cls=cls, W=W, unit_mm=k)
         except Exception as e_:
@@ -297,6 +395,7 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         if evr["status"] == "unknown":
             row["note"] = "геометрия не проверена: %s - нужна выгрузка 3ds Max (scripts/max/sda_export.ms)" % (
                 "; ".join(evr["notes"][-3:]) or ", ".join(row.get("mods") or []))
+            _lattice_proxy(R, msh, W, row, meshes, k)
     for row in rows:
         if row.get("mods") and "bbox" not in row and not row.get("footprint") and row.get("class") not in SKIP_CLASSES \
                 and row.get("geom") != "export" and "note" not in row:
@@ -349,6 +448,13 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
     _items(live, meshes, k, d, out)
     print("units:", u, "(guess from storey %s)" % (round(H, 1) if H else "-") if not units else "")
     print("nodes:", len(rows), " meshes:", len(meshes), " ->", out)
+    meshes.clear()                              # the parsed .max (gigabytes) is not needed by the album build
+    try:
+        R.M.SCENE_LIST = None
+    except Exception:
+        pass
+    import gc
+    gc.collect()
 
 
 def _plot(rows, sec, png, title):

@@ -129,6 +129,7 @@ class Part:
         self.mats = d.get("mats") or []
         self.mods = d.get("mods") or []
         self.prop = bool(d.get("prop"))
+        self.sound = bool(d.get("sound"))      # computed from the scene's modifier stack: its faces are the scene's
         self.v = np.asarray(d["v"], float)
         nv = len(self.v)
         raw = [list(map(int, f)) for f in d.get("f") or [] if len(f) >= 3]
@@ -136,7 +137,8 @@ class Part:
         self.unsound = len(self.f) < len(raw) or bool(d.get("unsound"))
         if self.unsound and self.f:
             self.clean_unsound()
-        if len(self.f) > 500:                  # faces of a broken stream span the whole object: drop them
+        if len(self.f) > 500 and not d.get("sound"):     # faces of a broken stream span the whole object: drop them
+            # (not on a mesh computed from the scene's modifier stack: a 1.8 m shelf plate there is a real face)
             tri = np.array([f[:3] for f in self.f], int)
             e = np.max(np.linalg.norm(self.v[tri] - self.v[np.roll(tri, 1, axis=1)], axis=2), axis=1)
             med = float(np.median(e))
@@ -297,7 +299,7 @@ class ItemMesh:
         Wv, Hv = max(x1 - x0, 1.0), max(y1 - y0, 1.0)
         bad, msgs = set(), []
         for pi, p in enumerate(self.parts):
-            if p.prop or not p.f:
+            if p.prop or not p.f or p.sound:
                 continue
             n, area = _normals(p.v, p.f)
             size = np.maximum(np.array(self.size, float), 1.0)
@@ -315,6 +317,8 @@ class ItemMesh:
             dx, dy = np.abs((a - b) @ r), np.abs((a - b) @ u)
             hit = (dx > 0.6 * Wv) & (dy > 0.6 * Hv) & (np.hypot(dx, dy) > 300.0)
             for pi in sorted(set(own[hit].tolist())):
+                if self.parts[pi].sound:          # a diagonal brace of a computed mesh is a brace
+                    continue
                 bad.add(pi)
                 msgs.append(("RENDER_GARBAGE", "«%s»: линия из угла в угол вида (%s)" % (self.parts[pi].name, kind)))
         return sorted(bad), msgs

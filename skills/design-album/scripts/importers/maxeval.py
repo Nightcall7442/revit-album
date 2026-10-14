@@ -88,10 +88,12 @@ def edit_poly_ops(block):
         if c.types == 0x0230:
             raw = _b(c)
             ops.append(dict(op=struct.unpack_from("<I", raw, 0)[0] if len(raw) >= 4 else -1, sel=None, params={},
-                            offsets=None))
+                            offsets=None, mats={}, extra={}, local={}))
         elif c.types == 0x0234 and ops:
             for d in getattr(c, "children", None) or []:
                 if d.types != 0x0600:
+                    if _b(d):
+                        ops[-1]["extra"][d.types] = _b(d)
                     continue
                 for e in getattr(d, "children", None) or []:
                     if e.types == 0x0400:
@@ -101,6 +103,13 @@ def edit_poly_ops(block):
                         if len(raw) >= 8:
                             pid = struct.unpack_from("<I", raw, 0)[0]
                             ops[-1]["params"][pid] = raw[4:8]
+                    elif e.types in (0x0420, 0x0430):          # Matrix3 parameters (slice plane ...)
+                        for g in getattr(e, "children", None) or []:
+                            raw = _b(g)
+                            if g.types == 0x03E8 and len(raw) == 48:
+                                ops[-1]["mats"][e.types] = np.frombuffer(raw, "<f4").reshape(4, 3).astype(np.float64)
+                    elif _b(e):
+                        ops[-1]["extra"][e.types] = _b(e)
         elif c.types == 0x0238 and ops:
             n, data = 0, b""
             for d in getattr(c, "children", None) or []:
@@ -108,6 +117,8 @@ def edit_poly_ops(block):
                     n = struct.unpack_from("<I", _b(d), 0)[0]
                 elif d.types == 0x12C4:
                     data = _b(d)
+                elif _b(d):
+                    ops[-1]["local"][d.types] = _b(d)
             if n and len(data) >= n * 12:
                 ops[-1]["offsets"] = np.frombuffer(data, dtype="<f4", count=n * 3).reshape(-1, 3).astype(np.float64)
     return ops

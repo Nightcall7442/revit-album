@@ -841,8 +841,9 @@ def build(objects, ceil, path, png=None, slab=None):
             a, b = cy - d_lo, cy + d_hi
             rect = [round(cx - 50), round(a), round(cx + 50), round(b)]
         pid = "ПГ%d" % k
-        ws.append(dict(id=pid, kind="new", rect=rect, source=dr["name"], check=True,
-                       material="Перегородка (стекло / ГКЛ по модели) 100 мм"))
+        # the partition is the agent's: wall to wall through the door; the door is its evidence, not its outline
+        ws.append(dict(id=pid, kind="new", rect=rect, source="перегородка по двери %s" % dr["name"], check=True,
+                       evidence=dr["name"], material="Перегородка (стекло / ГКЛ по модели) 100 мм"))
         w_ = int(round(min(L, (b - a) - 100) / 10.0) * 10)
         c_ = (a + b) / 2.0 if abs(((a + b) / 2.0) - (cx if horiz else cy)) > (b - a) / 2.0 - w_ / 2.0 else (cx if horiz else cy)
         ops.append(dict(id="Д.D%d" % k, mark="Д-?", kind="door", wall=pid, c=round(c_), w=w_, h=dr["h"], check=True,

@@ -307,39 +307,76 @@ def elev_window(E, e, k):
     return (-left, -bottom, E.L + sc25(k, 720), E.H + sc25(k, 350))
 
 
+ELEV_SCALES = (25, 30, 40, 50, 75, 100)
+SHEET_W = 388.0                   # drawing width of a sheet: x 24 .. 412 mm
+KEY_W = 110.0                     # the key plan of the floor (x 308 .. 408) next to the elevations
+
+
+def _plan_w(room):
+    """Width of the room plan (bath_plan: 1:25, the room +- 950 mm) plus its gap - mm of the sheet."""
+    bx0, by0, bx1, by1 = room["shp"].bounds
+    return (bx1 - bx0 + 1900.0) / 25.0 + 10.0
+
+
+def elev_scale(E, e, lim):
+    """1:25 when the wall fits the sheet, else the next usual scale (a 10 m wall of a hall: 1:30 / 1:40) - L-108."""
+    for k in ELEV_SCALES:
+        w = elev_window(E, e, k)
+        if (w[2] - w[0]) / k <= lim:
+            return k
+    return ELEV_SCALES[-1]
+
+
 def elevation_sheets(A):
     P = A.P
     out = []
     for g in groups(P):
         room = P.room_by_name.get(g["name"]) or group_room(P, g)
         with_plan = room is not None and g.get("plan", True) and room.get("cls") == "wet"
-        k = 25
-        widths = []
+        plan_w = _plan_w(room) if with_plan else 0.0
+        sized = []
         for e in g["elevs"]:
             E = Elev(P, e)
+            k = elev_scale(E, e, SHEET_W - (KEY_W if e.get("feature") else 0.0))
             w = elev_window(E, e, k)
-            widths.append((w[2] - w[0]) / k)
+            sized.append((e, E, k, (w[2] - w[0]) / k))
         pages = []
-        cur, used = [], (140.0 if with_plan else 0.0)
-        for e, w in zip(g["elevs"], widths):
-            if cur and used + w + 6 > 388:
-                pages.append(cur)
-                cur, used = [], 0.0
-            cur.append(e)
+        cur, used = [], plan_w
+        for e, E, k, w in sized:
+            first_with_plan = with_plan and not pages
+            key = (not first_with_plan) and any(x.get("feature") for x, _, _ in cur + [(e, k, w)])
+            lim = SHEET_W - (KEY_W if key else 0.0)
+            if used + w + 6 > lim:
+                if cur:
+                    pages.append(cur)
+                    cur, used = [], 0.0
+                elif first_with_plan:             # the first wall goes beside the plan: a smaller scale
+                    k = elev_scale(E, e, lim - used - 6)
+                    ww = elev_window(E, e, k)
+                    w = (ww[2] - ww[0]) / k
+            cur.append((e, k, w))
             used += w + 6
         if cur:
             pages.append(cur)
-        n_pages = len(pages)
+        pages = [pg for pg in pages if pg]
+        # the last page carries the materials of the group on the right (>= 85 mm): a wall moves to a page of its own
+        last = pages[-1] if pages else []
+        lw = (plan_w if (with_plan and len(pages) == 1) else 0.0) + sum(w + 6 for _, _, w in last)
+        if len(last) > 1 and lw > SHEET_W - 85.0:
+            pages.append([last.pop()])
         for i, pg in enumerate(pages):
-            labels = ", ".join(e.get("label", "") for e in pg)
+            labels = ", ".join(e.get("label", "") for e, _, _ in pg)
             if with_plan and i == 0:
                 title = "%s. План, развёртки %s" % (g["name"], labels)
             else:
                 title = "%s. Развёртки %s" % (g["name"], labels) if len(pg) > 1 else "%s. Развёртка %s" % (g["name"], labels)
             if g["name"].lower().startswith("кухня") and len(pg) == 1:
                 title = "%s. Развёртка %s" % (g["name"], labels)
-            out.append((title, "1:25", elevation_sheet, dict(group=g, elevs=pg, plan=with_plan and i == 0,
-                                                             last=(i == len(pages) - 1), room=room)))
+            ks = [k for _, k, _ in pg]
+            scale = ", ".join("1:%d" % k for k in sorted(set(ks + ([25] if with_plan and i == 0 else []))))
+            out.append((title, scale, elevation_sheet, dict(group=g, elevs=[e for e, _, _ in pg], ks=ks,
+                                                            plan=with_plan and i == 0,
+                                                            last=(i == len(pages) - 1), room=room)))
         if with_plan and g.get("iso", True):           # wet rooms: axonometric views with the tile layout
             out.append(("%s. Аксонометрия" % g["name"], "б/м", iso_sheet, dict(group=g, room=room)))
     if P.nodes:
@@ -349,20 +386,22 @@ def elevation_sheets(A):
 
 def elevation_sheet(A, no, title, scale, arg):
     P = A.P
-    k = 25
-    sub = "Развёртки стен 1:25 (вид из помещения). Раскладка, выводы, размеры от чистого пола"
+    ks = arg.get("ks") or [25] * len(arg["elevs"])
+    sub = "Развёртки стен %s (вид из помещения). Раскладка, выводы, размеры от чистого пола" % ", ".join(
+        "1:%d" % k for k in sorted(set(ks)))
     psp = A.make_sheet(no, title, scale, sub)
     x0 = 24.0
     if arg["plan"]:
         x0 = bath_plan(A, psp, no, arg["room"]) + 10
     top_ = 0.0
     for i, e in enumerate(arg["elevs"]):
+        k = ks[i]
         blk, off = A.model_block(no, i + 1)
         occ = Occ()
         E = draw_elevation(blk, P, e, k, occ)
         win = elev_window(E, e, k)
         r = A.vp(psp, off, win, (x0, 64.0), k)
-        A.title_note(psp, r[0] + 4, r[3] + 1.5, "Развёртка %s" % e.get("label", ""), "1:25")
+        A.title_note(psp, r[0] + 4, r[3] + 1.5, "Развёртка %s" % e.get("label", ""), "1:%d" % k)
         x0 = r[2] + 6
         top_ = max(top_, r[3])
     if not arg["plan"] and any(e.get("feature") for e in arg["elevs"]):

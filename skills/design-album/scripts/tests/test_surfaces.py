@@ -182,3 +182,38 @@ def test_fixtures_in_a_row_get_one_chain(made):
     rows = [c for c in ch if len(c[0]) >= 4]
     assert rows and not rows[0][2] and rows[0][1] == 6500                # along the row, through the fixtures
     assert len(ch) == 2                                                  # + one cross dimension of the row
+
+
+def test_a_long_wall_elevation_fits_the_sheet(made, tmp_path):
+    """Sherov cafe (L-108): with the computed scene the hall got elevations of 10.5 m walls; at the fixed 1:25 they ran
+    past the frame (dimensions «за рамкой листа») and under the key plan («видовые экраны перекрываются»), and the
+    WC sheet budgeted 140 mm for a plan that was wider. Every elevation now takes the scale it fits at, and no sheet
+    of elevations leaves the frame."""
+    import copy as cp
+    from sdalbum import album, model, qa
+    from sdalbum import sheets_details as SD
+    d = cp.deepcopy(made["d"])
+    d["elevations"].append(dict(group="Обеденный зал", room="Обеденный зал", a=[0, 9000], b=[12000, 9000], height=3000,
+                                proposed=True, base="paint", feature=True, labels=[], fixtures=[], label="Б"))
+    P = model.Project(d, made["base"])
+    e = next(x for x in P.elevations if x.get("label") == "Б" and x.get("room") == "Обеденный зал")
+    E = SD.Elev(P, e)
+    k = SD.elev_scale(E, e, SD.SHEET_W - SD.KEY_W)
+    w = SD.elev_window(E, e, k)
+    assert k > 25 and (w[2] - w[0]) / k <= SD.SHEET_W - SD.KEY_W     # the 12 m wall is not forced into 1:25
+    A = album.Album(P, str(tmp_path / "out"), sheets=["elevations"])
+    A.build(heal=False)
+    for no in A.layouts:
+        issues, _ = qa.check_layout(A.doc, A.layouts[no], True)
+        bad = [i for i in issues if i["code"] in ("TEXT_OUT_FRAME", "VIEWPORT_OVERLAP", "VIEWPORT_OUT")]
+        assert not bad, (no, bad)
+
+
+def test_elevation_scale_steps_down_for_a_10_m_wall():
+    from sdalbum import sheets_details as SD
+
+    class E_:
+        L, H = 10500.0, 3000.0
+    k = SD.elev_scale(E_(), {"heights": True}, SD.SHEET_W - SD.KEY_W)
+    assert k in SD.ELEV_SCALES and k > 25 and (10500 + 520 + 720) / k <= SD.SHEET_W - SD.KEY_W
+    assert SD.elev_scale(type("E", (), {"L": 3000.0, "H": 3000.0})(), {}, SD.SHEET_W) == 25

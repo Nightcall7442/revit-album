@@ -368,3 +368,134 @@ def test_a_shelving_around_a_column_is_not_moved_off_it(tmp_path):
     it = dict(kind="shelving", size=[1800, 600, 2600], places=[[3000, 3000, 0]], columns=[[-200, -200, 200, 200]])
     IT._settle(it, P)
     assert it["places"][0][:2] == [3000, 3000]
+
+
+def test_a_computed_shelf_plate_is_drawn():
+    """Metal rack of the Sherov cafe (L-107): the shelves come out of the computed modifier stack - 1.8 m plates with
+    rounded rims of many small faces. The broken-stream filter (L-087) took the plates for faces across the piece and
+    the sketch showed posts without shelves. A part computed from the scene (sound) keeps every face."""
+    from sdalbum import items3d
+    v, f = _box(-892, -223, 0, 892, 223, 5)
+    rim = []
+    for i in range(600):                                   # the rounded rim: many short faces
+        x = -892 + i * 1784.0 / 600
+        rim.append(np.array([(x, -223, 0), (x + 2.9, -223, 0), (x + 2.9, -224, 2.5), (x, -224, 2.5)], float))
+    v = np.vstack([v] + rim)
+    f = f + [[8 + 4 * i, 9 + 4 * i, 10 + 4 * i, 11 + 4 * i] for i in range(600)]
+    old = items3d.Part(dict(name="shelves001", v=v, f=f))
+    assert len(old.f) < len(f)                             # the old filter drops the plate faces
+    new = items3d.Part(dict(name="shelves001", v=v, f=f, sound=True))
+    assert len(new.f) == len(f)
+    m = items3d.ItemMesh(dict(parts=[dict(name="shelves001", v=v, f=f, sound=True)]))
+    healed, rest = m.selfcheck()
+    assert not healed and len(m.parts[0].f) == len(f)
+
+
+def test_a_plank_on_the_wall_and_a_low_box_are_not_coffee_tables():
+    """Sherov cafe (L-107): once the modifier stacks were computed, a 1049 x 229 x 31 ledge at +1013 and a bare box
+    644 x 448 x 101 on the floor showed up as «Стол журнальный». Sitting furniture stands on the floor and a coffee
+    table is at least 300 high: the plank is a wall shelf, the low box a podium."""
+    from sdalbum import items as IT
+    from sdalbum import items3d
+
+    def one(vf):
+        return items3d.ItemMesh(dict(parts=[dict(name="Box", mats=[], v=vf[0].astype(np.float32), f=vf[1])]))
+    ledge = one(_box(0, 0, 0, 1049, 229, 31))            # item meshes are local: z from the piece's bottom
+    it = dict(src="Box2131637797", parts=["Box"], mats=["Material #2147470827"], z0=1013)
+    assert IT.classify(it, ledge) == "wall_shelf"
+    assert IT.name_of("wall_shelf", dict(it, size=[1049, 229, 31]), ledge) == "Полка настенная 1050×230"
+    low = one(_box(0, 0, 0, 644, 448, 101))
+    assert IT.classify(dict(src="Box2131637803", parts=["Box"], mats=[], z0=0), low) == "podium"
+    tbl = one(_box(0, 0, 0, 1000, 600, 450))
+    assert IT.classify(dict(src="Box1", parts=["Box"], mats=[], z0=0), tbl) == "coffee_table"
+
+
+def test_a_designer_entry_matching_two_different_pieces_does_not_double_them():
+    """Seven bar tables in the designer's data («qty 7, h 750»); the computed model has 4 at 781 and 3 at 558. Both
+    items matched the entry and each got qty 7 - 14 tables. Now each keeps the model's count and height, the
+    names differ by the height and the disagreement goes to the report."""
+    from sdalbum import items as IT
+    made = [dict(id="u1", src="Group645", parts=["Modern_Black_Round_Bar_Table"], mats=[], size=[717, 717, 781], qty=4,
+                 name="Стол", kind="table", notes=[]),
+            dict(id="u2", src="Group746", parts=["Modern_Black_Round_Bar_Table"], mats=[], size=[717, 717, 558], qty=3,
+                 name="Стол", kind="coffee_table", notes=[])]
+    d = dict(item_overrides=[{"match": "Modern_Black_Round_Bar_Table", "set": {
+        "name": "Стол круглый Ø700 с мраморной столешницей", "kind": "table", "size": [700, 700, 750], "qty": 7,
+        "elements": [["Столешница", "мрамор"]], "notes": {"add": ["Высота стола 750 мм."]}}}])
+    out = IT.apply_overrides(d, made, None)
+    assert sorted(it["qty"] for it in out) == [3, 4]
+    assert sorted(it["size"][2] for it in out) == [558, 781]
+    assert len({it["name"] for it in out}) == 2 and all(it["name"].startswith("Стол круглый Ø700") for it in out)
+    assert all("Высота стола 750 мм." in it["notes"] for it in out)              # the notes reach both pieces
+    assert all(any(n.startswith("Размеры — по 3D-модели") for n in it["notes"][:2]) for it in out)   # the sheet asks
+    assert all(("qty", 7, it["qty"]) in it["designer_vs_model"] for it in out)
+
+
+def test_a_group_with_an_uncomputed_part_is_not_split(tmp_path):
+    """Sherov sofa (L-107): the rolls of a sofa are stretched by FFD after an Edit Poly that could not be computed -
+    their cages lie a metre away from the seat. The group was split into «Диван-валик 4300, h 640» and «…, h 90»;
+    a group with such a part stays one piece (it is the designer's unit)."""
+    from importers import scene_items
+    sc = Scene()
+    walls = _shell(sc)
+    g = sc.group("Group690")
+    sc.mesh("Object105", _box(3000, 3000, 0, 4000, 4000, 640), parent=g, mats=["Ma33"])
+    sc.mesh("Cylinder1770", _box(6000, 6000, 0, 6784, 6100, 100), parent=g, mats=["Mat44"])
+    sc.rows[-1]["geom"] = "unknown"
+    items, _ = scene_items.collect(sc.rows, sc.meshes, 1.0, dict(walls=walls, furniture=[]), str(tmp_path / "imp"))
+    assert [it["src"] for it in items] == ["Group690"]
+    sc.rows[-1]["geom"] = "replayed"                          # computed: far apart, other material - two pieces
+    items, _ = scene_items.collect(sc.rows, sc.meshes, 1.0, dict(walls=walls, furniture=[]), str(tmp_path / "imp2"))
+    assert len([it for it in items if it["src"].startswith("Group690")]) == 2
+
+
+def test_a_shelf_on_the_wall_keeps_its_outline_on_the_plan(tmp_path):
+    """The shelf on top of a WC installation box (+1,013): on the plan it was cut by the box under it and by the WC to
+    350 × 110 while its sketch says 1050 × 230. A piece hanging on the wall keeps its own outline."""
+    from importers import scene_items
+    from sdalbum import items as IT
+    from shapely.geometry import Polygon
+    sc = Scene()
+    walls = _shell(sc)
+    sc.mesh("Box2131637797", _box(2000, 0, 1013, 3049, 229, 1044), mats=["Material #2147470827"])
+    items, _ = scene_items.collect(sc.rows, sc.meshes, 1.0, dict(walls=walls, furniture=[]), str(tmp_path / "import"))
+    walls = walls + [dict(id="W9", kind="new", rect=[1950, 0, 3100, 113])]             # the installation box
+    d = dict(meta=dict(object="т"), levels=dict(floor=0, ceiling=2900, slab=3000), walls=walls, openings=[],
+             rooms=[dict(name="Санузел", seed=[5000, 4000])], lighting=[], switches=[], sockets=[], plumbing=[],
+             floors=[], ceilings=dict(types=[], zones=[]), elevations=[], nodes=[], items=items,
+             furniture=[dict(name="Унитаз подвесной", kind="wc", poly=[[2300, 113], [2650, 113], [2650, 650], [2300, 650]],
+                             room="Санузел")])
+    IT.decide(d, str(tmp_path))
+    it = next(x for x in d["items"] if x["src"] == "Box2131637797")
+    assert it["kind"] == "wall_shelf"
+    f = next(x for x in d["furniture"] if x.get("item") == it["pos"])
+    x0, y0, x1, y1 = Polygon(f["poly"]).bounds
+    assert x1 - x0 > 1000 and y1 - y0 > 200 and f["z"][0] > 1000
+
+
+def test_a_media_console_is_a_console():
+    """«RH ST. JAMES PANEL 65" MEDIA CONSOLE» (778 × 311 × 553 under the WC lobby basin) came out as «Стол журнальный»."""
+    from sdalbum import items as IT
+    it = dict(src='RH ST. JAMES PANEL 65" MEDIA CONSOLE Antiqued Coffee001', parts=[], mats=[], size=[778, 311, 553], z0=0)
+    assert IT.classify(it, None) == "console"
+    assert IT.name_of("console", it, None) == "Консоль 780×310"
+
+
+def test_a_piece_known_only_by_its_lattice_says_so_on_its_sketch(tmp_path):
+    """The media console of the WC lobby is a Boolean under an FFD: only the lattice box is known. Its sketch shows
+    that box - and says that the shape is not computed (L-107)."""
+    from importers import scene_items
+    from sdalbum import items as IT
+    sc = Scene()
+    walls = _shell(sc)
+    sc.mesh('RH ST. JAMES PANEL 65" MEDIA CONSOLE Antiqued Coffee001', _box(3000, 0, 0, 3778, 311, 553), mats=["Antiqued Nickel"])
+    sc.rows[-1]["geom"] = "unknown"
+    sc.rows[-1]["geom_notes"] = ["габарит - по решётке последнего FFD (сетка внутри не вычислена)"]
+    items, _ = scene_items.collect(sc.rows, sc.meshes, 1.0, dict(walls=walls, furniture=[]), str(tmp_path / "import"))
+    assert items[0]["outline_only"]
+    d = dict(meta=dict(object="т"), levels=dict(floor=0, ceiling=2900, slab=3000), walls=walls, openings=[],
+             rooms=[dict(name="Тамбур", seed=[5000, 4000])], lighting=[], switches=[], sockets=[], plumbing=[],
+             floors=[], ceilings=dict(types=[], zones=[]), elevations=[], nodes=[], items=items, furniture=[])
+    IT.decide(d, str(tmp_path))
+    it = d["items"][0]
+    assert it["kind"] == "console" and any("не вычислена" in n for n in it["notes"])

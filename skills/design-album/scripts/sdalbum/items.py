@@ -22,8 +22,8 @@ import numpy as np
 
 from . import items3d
 
-KIND_ORDER = ["table", "coffee_table", "chair", "armchair", "sofa", "bench", "shelving", "bookshelf", "records",
-              "chandelier", "sconce", "decor", "sign", "item"]
+KIND_ORDER = ["table", "coffee_table", "console", "chair", "armchair", "sofa", "bench", "podium", "shelving", "bookshelf", "records",
+              "wall_shelf", "chandelier", "sconce", "decor", "sign", "item"]
 LIGHT_KINDS = ("chandelier", "sconce")
 RX = [
     ("bookshelf", r"(?i)bookshel|книжн"),
@@ -34,16 +34,18 @@ RX = [
     ("bench", r"(?i)bench|скамь|banquet"),
     ("armchair", r"(?i)armchair|кресл|swivel|lounge"),
     ("chair", r"(?i)chair|стул|stool|alcor_brown"),
+    ("console", r"(?i)console|консол|sideboard"),
     ("coffee_table", r"(?i)cocktail|coffee.?table|журнальн"),
     ("table", r"(?i)table|стол|desk"),
 ]
 NAME = {"table": "Стол", "coffee_table": "Стол журнальный", "chair": "Стул", "armchair": "Кресло", "sofa": "Диван",
         "bench": "Скамья встроенная с мягкими элементами", "shelving": "Стеллаж", "bookshelf": "Полка книжная настенная",
         "records": "Полка для виниловых пластинок", "decor": "Декоративный элемент", "sign": "Вывеска световая",
-        "chandelier": "Люстра подвесная", "sconce": "Бра настенное", "item": "Изделие"}
+        "chandelier": "Люстра подвесная", "sconce": "Бра настенное", "item": "Изделие", "wall_shelf": "Полка настенная",
+        "podium": "Подиум", "console": "Консоль"}
 PLAN_KIND = {"table": "table", "coffee_table": "table", "chair": "chair", "armchair": "armchair", "sofa": "sofa",
              "bench": "sofa", "shelving": "cabinet", "bookshelf": "cabinet", "records": "cabinet", "decor": "cabinet",
-             "item": "cabinet"}
+             "item": "cabinet", "wall_shelf": "cabinet", "podium": "cabinet", "console": "cabinet"}
 MAT = {
     "marble": "натуральный мрамор (образец плиты — по согласованию), защитная пропитка от пятен",
     "stone": "натуральный камень по образцу, защитная пропитка",
@@ -94,15 +96,23 @@ def classify(it, m):
         if kind == "table" and H < 560:
             return "coffee_table"
         return kind
-    if W >= 1500 and 550 <= H <= 1000 and D >= 550:
+    # by geometry only: furniture to sit at / on stands on the floor (L-107: a 31 mm plank at +1013 is a wall shelf,
+    # a 101 mm box on the floor is a podium - neither is a coffee table)
+    z0 = float(it.get("z0") or 0)
+    on_floor = z0 <= 150
+    if z0 >= 300 and H <= 100 and W >= 400 and D <= 450:
+        return "wall_shelf"
+    if on_floor and H <= 200 and min(W, D) >= 300:
+        return "podium"
+    if on_floor and W >= 1500 and 550 <= H <= 1000 and D >= 550:
         return "sofa"
     if H >= 1000 and D <= 700:
         return "shelving"
-    if 650 <= H <= 820 and W >= 500:
+    if on_floor and 650 <= H <= 820 and W >= 500:
         return "table"
-    if H < 560 and W >= 500:
+    if on_floor and 300 <= H < 560 and W >= 500 and D >= 300:
         return "coffee_table"
-    if 650 <= H <= 1000 and W < 700:
+    if on_floor and 650 <= H <= 1000 and W < 700:
         return "chair"
     return "item"
 
@@ -142,6 +152,8 @@ def name_of(kind, it, m, P=None):
         return "Полка книжная настенная с подсветкой"
     if kind == "sofa":
         return "Диван %d×%d" % (round(W / 10.0) * 10, round(D / 10.0) * 10)
+    if kind in ("wall_shelf", "podium", "console"):
+        return "%s %d×%d" % (NAME[kind], round(W / 10.0) * 10, round(D / 10.0) * 10)
     return NAME.get(kind, "Изделие")
 
 
@@ -186,6 +198,9 @@ def elements(kind, m):
                 out.append(("Обивка" if not out else "Опоры", "fabric" if not out else None, big))
             else:
                 out.append(("Отделка", fam, idx[0]))
+    elif kind in ("wall_shelf", "podium", "console"):
+        main = max(body, key=lambda ip: float(np.ptp(ip[1].v[:, 0]) * np.ptp(ip[1].v[:, 1])))
+        out.append(("Полка" if kind == "wall_shelf" else "Корпус", main[1].fam, main[0]))
     elif kind == "bench":
         low = [ip for ip in body if ip[1].fam not in ("fabric", "leather") and float(ip[1].v[:, 2].max()) <= 470]
         soft = [ip for ip in body if ip[1].fam in ("fabric", "leather")]
@@ -219,6 +234,14 @@ def notes_for(kind, it, extra=()):
     if kind in ("table", "coffee_table"):
         n.append("Столешница — с защитной пропиткой от пятен (кофе, масло), кромка скруглена r = 2–3 мм; опора — с "
                  "регулируемыми подпятниками, устойчивость проверить при нагрузке на край.")
+    if kind == "wall_shelf":
+        z = it.get("z0")
+        n.append("Верх полки — на отметке %s от чистого пола (по модели); крепление — скрытые кронштейны / анкеры по "
+                 "материалу стены, нагрузку согласовать." % (("+%.3f" % ((z + it["size"][2]) / 1000.0)).replace(".", ",")
+                                                            if z is not None else "по модели"))
+    if kind == "podium":
+        n.append("Подиум — каркас по месту, облицовка и цвет — по визуализации; назначение (подставка под декор / "
+                 "оборудование) — уточнить у дизайнера.")
     if kind in ("shelving", "bookshelf", "records"):
         n.append("Крепление к стене — скрытое, анкерами по материалу стены (уточнить по месту); полки рассчитать на "
                  "нагрузку от книг / пластинок без прогиба.")
@@ -320,7 +343,7 @@ def footprint(it, place, m=None):
     return affinity.translate(g, x, y)
 
 
-WALL_BACKED = ("sofa", "bench", "shelving", "bookshelf", "records")
+WALL_BACKED = ("sofa", "bench", "shelving", "bookshelf", "records", "wall_shelf", "console")
 
 
 def _settle(it, P):
@@ -434,6 +457,9 @@ def decide(d, base):
         if kind not in LIGHT_KINDS and (kind == "bookshelf" or any(e["fam"] == "led" for e in it["elements"])):
             extra.append("Подсветка — включается с общей группой зала; блок питания — в доступном месте (за "
                          "съёмной панелью), выводы кабеля — по плану розеток.")
+        if it.get("outline_only"):
+            extra.append("Форма изделия в 3D-модели не вычислена (стек модификаторов не повторяется) — на эскизе "
+                         "габарит по модели; форма, детали и отделка — по визуализации / каталогу, уточнить у дизайнера.")
         cols_ = _columns_inside(P, it) if kind in ("shelving", "bookshelf", "item") else []
         ncol = len(cols_)
         it["columns"] = cols_
@@ -444,6 +470,12 @@ def decide(d, base):
         it["notes"] = notes_for(kind, it, extra)
         made.append(it)
     made = apply_overrides(d, made, P)
+    for it in made:
+        for k, want, got in it.get("designer_vs_model") or []:
+            log.append(dict(topic="Мебель", msg="«%s»: в данных дизайнера %s = %s, в 3D-модели — %s (по местам модели); "
+                            "принято по модели, уточнить у дизайнера" % (it.get("name"), {"qty": "количество", "size": "размер"}[k],
+                                                                         want, got),
+                            why="модель показывает разные изделия под одним названием — сверка со сценой 3ds Max"))
     for it in made:                        # the designer's size / section: the plan outline follows it
         if it.get("profile") or it.get("size_user"):
             try:
@@ -501,31 +533,72 @@ def apply_overrides(d, made, P):
             out.append(it)
             continue
         rx = re.compile(ov.get("match", "^$"))
-        for it in out:
-            if not rx.search(_txt(it)):
-                continue
+        hit = [it for it in out if rx.search(_txt(it))]
+        several = len(hit) > 1 and not ov.get("skip")
+        for it in hit:
             if ov.get("skip"):
                 it["skip"] = True
                 continue
-            if "size" in st:
+            st_i = dict(st)
+            if several:
+                # the model shows different pieces under these names (other height, other count): each keeps the
+                # size and the quantity of the model, the designer's name and materials go to all of them (L-107)
+                for k in ("qty", "size"):
+                    if k in st_i and st_i[k] != it.get(k):
+                        it.setdefault("designer_vs_model", []).append((k, st_i[k], it.get(k)))
+                    st_i.pop(k, None)
+            if "size" in st_i:
                 it["size_user"] = True
-            if "elements" in st:
+            if "elements" in st_i:
                 old = it.get("elements") or []
-                for i, e in enumerate(st["elements"]):     # the callout keeps pointing at the part of the model
+                els = [dict(e) for e in st_i["elements"]]
+                for i, e in enumerate(els):                 # the callout keeps pointing at the part of the model
                     if e.get("part") is None and i < len(old):
                         e["part"] = old[i].get("part")
-            if "notes" in st and isinstance(st["notes"], dict):
-                add = st.pop("notes").get("add", [])
+                st_i["elements"] = els
+            if "notes" in st_i and isinstance(st_i["notes"], dict):
+                add = st_i.pop("notes").get("add", [])
                 it["notes"] = list(add) + [n for n in it.get("notes", []) if n not in add]
-            it.update(st)
-            it["auto_fields"] = sorted(st)
+            it.update(st_i)
+            it["auto_fields"] = sorted(st_i)
+            ask = []
+            for k, want, got in it.get("designer_vs_model") or []:
+                if k == "size":
+                    ask.append("Размеры — по 3D-модели: %s мм; в данных дизайнера — %s мм: уточнить у дизайнера до "
+                               "изготовления." % ("×".join(str(int(round(x))) for x in got),
+                                                 "×".join(str(int(round(x))) for x in want)))
+                else:
+                    ask.append("Количество — по 3D-модели: %s шт.; в данных дизайнера — %s шт. на все исполнения: "
+                               "уточнить." % (got, want))
+            if ask:
+                it["notes"] = ask + [n for n in it.get("notes", []) if n not in ask]
     # bought pieces (no sketch) keep their models for the 3D view of the album
     bought = {it["id"]: {k: v for k, v in it.items() if k in ("id", "src", "size", "z0", "places", "mesh", "foot")}
               for it in out if it.get("skip") and it.get("mesh")}
     for it in d.get("_items_bought") or []:        # a re-run on the working copy: the skipped pieces are gone from
         bought.setdefault(it["id"], it)            # the items, their models stay for the 3D view
     d["_items_bought"] = list(bought.values())
-    return [it for it in out if not it.get("skip")]
+    res = [it for it in out if not it.get("skip")]
+    _distinct_names(res)
+    return res
+
+
+def _distinct_names(items):
+    """Two positions never carry one name: pieces of different height get «, h NNN», else their size."""
+    by = {}
+    for it in items:
+        if it.get("name"):
+            by.setdefault(it["name"], []).append(it)
+    for name, its in by.items():
+        if len(its) < 2:
+            continue
+        hs = [int(round(it["size"][2] / 10.0) * 10) for it in its]
+        if len(set(hs)) == len(its):
+            for it, h in zip(its, hs):
+                it["name"] = "%s, h %d" % (name, h)
+        else:
+            for it in its:
+                it["name"] = "%s %d×%d×%d" % ((name,) + tuple(int(round(x / 10.0) * 10) for x in it["size"]))
 
 
 def _to_plan(d, P):
@@ -569,8 +642,12 @@ def _to_plan(d, P):
             r = P.room_of_point((place[0], place[1]), 300)
             if r is None:
                 continue
-            gg = g.intersection(r["shp"]).difference(P.mass).buffer(0)
-            for pg in polys:                         # a thin strip over a neighbour is a modelling tolerance
+            hung = it.get("z0", 0) > 150
+            if hung:                                 # on the wall above the floor (a shelf over a WC installation box):
+                gg = g.buffer(0)                     # its own outline - not cut by the box under it or the WC (L-107)
+            else:
+                gg = g.intersection(r["shp"]).difference(P.mass).buffer(0)
+            for pg in ([] if hung else polys):       # a thin strip over a neighbour is a modelling tolerance
                 if pg is None:
                     continue
                 ov = gg.intersection(pg)

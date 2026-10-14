@@ -395,7 +395,10 @@ def collect(rows, meshes, k, d, out_dir):
             if whole.ok and (_skip_unit(whole, walls_rects, counters) or "").startswith("not furniture"):
                 continue                     # a WC group: its flush button is not a piece of furniture
             pieces = _split(parts)
-            if len(pieces) > 1:
+            # a part whose modifiers are not computed lies where its cage lies, not where 3ds Max shows it (a sofa
+            # roll stretched by FFD): the designer's group stays one piece then - L-107
+            unsure = any(p.row.get("geom") == "unknown" for p in parts)
+            if len(pieces) > 1 and not unsure:
                 for i, pc in enumerate(pieces):
                     units.append(Unit("%s/%s" % (g, _num(pc[0].name) or pc[0].name), pc))
                 continue
@@ -467,10 +470,15 @@ def collect(rows, meshes, k, d, out_dir):
             items.append(dict(id=iid, src=u.src, parts=sorted(set(_num(n) or n for n in u.names))[:12], mats=u.mats[:12],
                               size=size, qty=1, z0=round(u.z0), places=[[round(c[0]), round(c[1]), round(th + (180 if sign < 0 else 0)) % 360]],
                               _sig=sig, _mesh=(u, vs)))
+            if any(any("решётке последнего FFD" in n for n in (p.row.get("geom_notes") or [])) for p in u.body):
+                items[-1]["outline_only"] = True           # its shape is a lattice box, not the piece (L-107)
     for it in items:
         u, vs = it.pop("_mesh")
+        # sound: the mesh is the scene's own (computed modifier stack, counts checked) - big faces are real faces
         mesh = dict(size=it["size"], parts=[dict(name=p.name, mats=p.mats, cls=p.cls, mods=p.mods, prop=p.prop and p not in u.body,
-                                                 v=vs[i].astype(np.float32), f=p.f) for i, p in enumerate(u.parts)])
+                                                 v=vs[i].astype(np.float32), f=p.f,
+                                                 sound=p.row.get("geom") in ("replayed", "exact", "export"))
+                                            for i, p in enumerate(u.parts)])
         pickle.dump(mesh, open(os.path.join(mdir, "%s.pkl" % it["id"]), "wb"))
     pre = "import/" if os.path.basename(os.path.abspath(out_dir)) == "import" else ""
     for it in items:

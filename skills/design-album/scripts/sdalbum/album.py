@@ -68,6 +68,10 @@ class Column:
         sc = self.w / float(sum(widths))
         widths_c = [w * sc for w in widths]
         need = need_at(self.w)
+        whole = any(y - need_at(w) >= b for x, y, w, b in [(self.x, self.y, self.w, self.bottom)] + list(self.spill))
+        if self.y - need < self.bottom and not whole and not (allow_band and self.a.band_free(need)) and len(rows) > 1 \
+                and self._split_table(widths, header, rows, title, h, aligns, total, head_h, zebra):
+            return
         if self.y - need < self.bottom and not (allow_band and self.a.band_free(need)):
             self._fit(need_at)
             sc = self.w / float(sum(widths))
@@ -82,6 +86,40 @@ class Column:
         self.y = S.table(self.psp, self.x, self.y, widths_c, header, rows, h=h, aligns=aligns, title=title, total=total,
                          head_h=head_h, zebra=zebra) - 9.0
         self._check()
+
+    def _split_table(self, widths, header, rows, title, h, aligns, total, head_h, zebra):
+        """A table taller than any free region: its rows run on through the regions left to right (the free strip
+        beside the plan, then the column), the header repeated - never into the title block (L-109)."""
+        regions = sorted([(self.x, self.y, self.w, self.bottom)] + list(self.spill), key=lambda r: r[0])
+
+        def height(part, wd, ttl, tot):
+            return S.table_height([w * wd / float(sum(widths)) for w in widths], header, part, h, head_h, ttl, total=tot)
+        plan, rest, first = [], list(rows), True
+        for x, y, w, bottom in regions:
+            if not rest:
+                break
+            ttl = title if first else ((title + " (продолжение)") if title else None)
+            n = 0
+            while n < len(rest) and y - height(rest[:n + 1], w, ttl, total if n + 1 == len(rest) else None) >= bottom:
+                n += 1
+            if n == 0:
+                continue
+            plan.append(((x, y, w, bottom), rest[:n], ttl, total if n == len(rest) else None))
+            rest = rest[n:]
+            first = False
+        if rest:
+            return False                               # does not fit anyway: the overflow check reports it
+        for (x, y, w, bottom), part, ttl, tot in plan:
+            sc = w / float(sum(widths))
+            yb = S.table(self.psp, x, y, [c * sc for c in widths], header, part, h=h, aligns=aligns, title=ttl,
+                         total=tot, head_h=head_h, zebra=zebra) - 9.0
+        last = plan[-1][0]
+        used = [r for r, *_ in plan]
+        self.x, self.w, self.bottom = last[0], last[2], last[3]
+        self.y = yb
+        self.spill = [r for r in regions if r not in used and r[0] > last[0]]
+        self._check()
+        return True
 
     def notes(self, lines):
         if not lines:

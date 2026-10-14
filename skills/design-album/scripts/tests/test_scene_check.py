@@ -350,6 +350,38 @@ def test_a_full_column_continues_beside_the_plan_not_into_the_stamp():
     assert a.issues == [] and col.x == 185.0
 
 
+def test_a_long_specification_runs_on_beside_the_plan_not_into_the_stamp():
+    """Sherov cafe (L-109): with every piece of the scene computed the furniture specification grew to 32 rows - one
+    table taller than the column and than the free strip beside the plan, drawn into the title block. The rows now
+    run on from the strip beside the plan into the column, the header repeated."""
+    import ezdxf
+    from sdalbum.album import Column, COL_X, COL_TOP, COL_BOTTOM
+
+    class Alb:
+        issues = []
+        cur_title = "06 План расстановки мебели"
+
+        def band_free(self, need):
+            return False
+
+        def spill_regions(self):
+            return [(190.0, COL_TOP, 105.0, COL_BOTTOM)]
+    a = Alb()
+    doc = ezdxf.new("R2018")
+    psp = doc.layouts.new("06")
+    col = Column(a, psp)
+    rows = [[str(i + 1), "Изделие номер %d с длинным названием на две строки" % (i + 1), "1000×600", "1", "Обеденный зал"]
+            for i in range(40)]
+    col.table([9, 41, 21, 8, 30], ["Поз.", "Наименование", "Габариты, мм", "Кол.", "Помещение"], rows,
+              title="Спецификация мебели и оборудования", h=1.6)
+    assert a.issues == []
+    texts = [e for e in psp if e.dxftype() in ("TEXT", "MTEXT")]
+    ys = [e.dxf.insert[1] for e in texts]
+    assert min(ys) >= COL_BOTTOM - 1.0                   # nothing under the column bottom (the title block)
+    xs = {round(e.dxf.insert[0]) for e in texts if "Поз." in (e.dxf.text if e.dxftype() == "TEXT" else e.text)}
+    assert len(xs) == 2 and min(xs) < COL_X <= max(xs) + 5   # the header twice: beside the plan and in the column
+
+
 def test_dwg_archive_carries_the_images_of_the_sheets(tmp_path):
     import zipfile
     import ezdxf
@@ -399,3 +431,18 @@ def test_dwg_has_no_empty_default_tab(tmp_path):
     doc.saveas(src)
     editable_dxf(src, dst, dwg_names=True)
     assert [n for n in ezdxf.readfile(dst).layouts.names_in_taborder() if n != "Model"] == ["01 Обложка"]
+
+
+def test_a_partition_through_doors_is_the_agents_not_the_door(tmp_path):
+    """L-106: the WC front partition runs wall to wall through two glass doors; the door is its evidence. Taking
+    the door for the partition's outline made a 1224 mm "error" once the door's FFD was computed."""
+    from sdalbum import audit
+    base = _scene(tmp_path, [_row("Glass_Door_21_001", [6894, -905, 7774, -785], geom="replayed")])
+    d = _proj([dict(id="ПГ1", kind="new", rect=[4670, -1905, 6870, -1805],
+                    source="перегородка по двери Glass_Door_21_001", evidence="Glass_Door_21_001")])
+    iss, sm = audit.run(d, base)
+    assert not [i for i in iss if i["code"] == "SCENE_GEOMETRY"]
+    assert [i["obj"] for i in iss if i["code"] == "NOT_IN_SCENE"] == ["ПГ1"]
+    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "importers",
+                            "scene_draft.py"), encoding="utf-8").read()
+    assert 'source="перегородка по двери %s"' in src
