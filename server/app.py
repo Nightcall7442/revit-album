@@ -24,7 +24,7 @@ import uuid
 import zipfile
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "skills", "design-album", "scripts")
@@ -134,7 +134,7 @@ def health():
 
 
 @app.post("/jobs")
-async def create_job(files: list[UploadFile] = File(...)):
+async def create_job(request: Request, files: list[UploadFile] = File(...)):
     jid = time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     src = os.path.join(JOBS, jid, "src")
     os.makedirs(src, exist_ok=True)
@@ -156,6 +156,8 @@ async def create_job(files: list[UploadFile] = File(...)):
     _save_meta(jid, dict(id=jid, files=names, status="queued", created=time.time()))
     with _lock:
         _queue.append(jid)
+    if "text/html" in request.headers.get("accept", ""):       # the upload form of the page: back to the job list
+        return RedirectResponse("/", status_code=303)
     return JSONResponse({"id": jid, "status": "queued"})
 
 
@@ -224,7 +226,7 @@ button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:9px 1
 table{width:100%%;border-collapse:collapse;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:8px 6px;text-align:left;vertical-align:top}
 a{color:var(--acc)}</style></head><body><main>
 <h1><b>Space</b> Design Album · агент %s</h1>
-<p>Загрузите сцену 3ds Max (.max), чертёж DWG/DXF, PDF, фото обмера, project.json или .zip папки — агент соберёт альбом дизайн-проекта. Сборка кафе ≈ 5–6 минут. %s.</p>
+<p>Загрузите сцену 3ds Max (.max), чертёж DWG/DXF, PDF, фото обмера, project.json или .zip папки — агент соберёт альбом дизайн-проекта. Сборка кафе ≈ 10 минут, страница обновляется сама. %s.</p>
 <form action="/jobs" method="post" enctype="multipart/form-data" onsubmit="this.querySelector('button').textContent='Загрузка…'">
 <input type="file" name="files" multiple required> <button>Собрать альбом</button></form>
 <p><a href="/plugin">Скачать плагин для Claude (space-design-album-%s.plugin)</a></p>
