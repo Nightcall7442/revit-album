@@ -222,7 +222,13 @@ def _furniture(P):
         if outside > 0.05 * g.area and outside > 0.01e6:
             out.append(I("FURN_OUTSIDE_ROOM", "error", "«%s» выходит за пределы «%s» на %.2f м²" % (f["name"], r["name"], outside / 1e6),
                          g.centroid.coords[0]))
-        if g.intersection(P.mass).area > 0.05 * g.area and f.get("kind") not in ("rail", "mirror", "tv"):
+        hit = g.intersection(P.mass)
+        if hit.area > 0.05 * g.area:             # a column the piece is built around (a rack around columns) is not a
+            parts = getattr(P.mass, "geoms", [P.mass])          # collision: free-standing pieces of the mass inside
+            inside = [c for c in parts if g.buffer(10).contains(c)]          # the outline are taken out (L-112)
+            if inside:
+                hit = g.difference(unary_union(inside).buffer(1)).intersection(P.mass)
+        if hit.area > 0.05 * g.area and f.get("kind") not in ("rail", "mirror", "tv"):
             out.append(I("FURN_IN_WALL", "error", "«%s» заходит в стену" % f["name"], g.centroid.coords[0]))
     for i in range(len(items)):
         for j in range(i + 1, len(items)):

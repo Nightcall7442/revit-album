@@ -499,3 +499,15 @@ def test_a_piece_known_only_by_its_lattice_says_so_on_its_sketch(tmp_path):
     IT.decide(d, str(tmp_path))
     it = d["items"][0]
     assert it["kind"] == "console" and any("не вычислена" in n for n in it["notes"])
+
+
+def test_a_slab_with_its_top_at_the_floor_is_not_a_podium(tmp_path):
+    """L-112: Sherov's Box2131637802 - 1666 × 858 × 20 mm, from -20 to 0 (an inlay in the floor) - became
+    «Подиум 1670×860» once 3ds Max's export gave it its thickness. A slab whose top is the floor is a covering."""
+    from importers import scene_items
+    sc = Scene()
+    walls = _shell(sc)
+    sc.mesh("Box2131637802", _box(2000, 2000, -20, 3666, 2858, 0), mats=["Material #1"])
+    sc.mesh("Box2131637803", _box(5000, 2000, 0, 5640, 2450, 101), mats=["Material #1"])
+    items, _ = scene_items.collect(sc.rows, sc.meshes, 1.0, dict(walls=walls, furniture=[]), str(tmp_path / "imp"))
+    assert [it["src"] for it in items] == ["Box2131637803"]

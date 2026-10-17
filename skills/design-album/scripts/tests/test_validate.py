@@ -117,3 +117,19 @@ def test_overlapping_wardrobes(make_project):
 
 def test_boundary_point_belongs_to_facing_room(urgench):
     assert urgench.room_of_point((700, 3880))["name"] == "Санузел совмещённый"
+
+
+def test_a_rack_built_around_a_column_is_not_in_the_wall(make_project):
+    """L-112: Sherov's "rack around columns" (1800×600, h 2600) wraps a free-standing column - its outline takes the
+    column in; that is how it is built, not a collision. A piece that only overlaps a column still is."""
+    def around(d):
+        d["walls"].append(dict(id="К1", kind="existing", rect=[4200, 800, 4600, 1200]))
+        d["furniture"].append(dict(name="Стеллаж вокруг колонны", kind="shelving", room="Комната",
+                                   poly=[[4000, 700], [4800, 700], [4800, 1300], [4000, 1300]]))
+    assert "FURN_IN_WALL" not in codes(make_project(around))
+
+    def overlap(d):
+        d["walls"].append(dict(id="К1", kind="existing", rect=[4200, 800, 4600, 1200]))
+        d["furniture"].append(dict(name="Тумба", kind="cabinet", room="Комната",
+                                   poly=[[4400, 700], [5000, 700], [5000, 1300], [4400, 1300]]))
+    assert "FURN_IN_WALL" in codes(make_project(overlap))

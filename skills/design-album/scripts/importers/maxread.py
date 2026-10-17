@@ -129,6 +129,27 @@ def get_scale(pos):
     return mtx
 
 
+def get_point(floatval, default=0.0):
+    """A float controller's value. Bezier Float keeps it in 0x7127/0x2501 - or straight in 0x2501 (objects merged
+    from libraries saved by other versions: Sherov's plants - the parser put 293 objects at the origin, L-111)."""
+    if floatval is None:
+        return default
+    uid = M.get_guid(floatval)
+    if uid == 0x2007:  # Bezier Float
+        holder = floatval.get_first(0x7127) or floatval
+        v = holder.get_first(0x2501)
+        if v is not None:
+            try:
+                return float(v.data[0])
+            except Exception:
+                return default
+        return default
+    if uid == M.FLOAT_POINT:  # Float Wire
+        r = M.get_references(floatval)
+        return get_point(r[0], default) if r else default
+    return default
+
+
 def create_matrix(prc):
     uid = M.get_guid(prc)
     if uid == 0x2005:  # Position/Rotation/Scale
@@ -142,6 +163,7 @@ def create_matrix(prc):
 
 M.get_rotation = get_rotation
 M.get_scale = get_scale
+M.get_point = get_point
 M.create_matrix = create_matrix
 
 

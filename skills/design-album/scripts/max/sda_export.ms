@@ -92,7 +92,7 @@
 				(
 					local nv = m.numverts
 					local nf = m.numfaces
-					local off = ftell bs
+					local ofs = ftell bs
 					for k = 1 to nv do
 					(
 						local p = getVert m k
@@ -108,7 +108,7 @@
 						WriteLong bs ((f.z as integer) - 1) #signed
 					)
 					for k = 1 to nf do WriteShort bs (getFaceMatID m k) #unsigned
-					meshInfo = "[" + (off as string) + "," + (nv as string) + "," + (nf as string) + "]"
+					meshInfo = "[" + (trimRight (ofs as string) "L") + "," + (nv as string) + "," + (nf as string) + "]"
 					faces += nf
 					try (delete m) catch ()
 				)

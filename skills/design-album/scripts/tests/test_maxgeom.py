@@ -230,3 +230,57 @@ def test_an_uncomputed_stack_ending_with_ffd_takes_the_lattice_as_its_outline(mo
     assert np.allclose(hi - lo, [88.4, 125.0 * 3.436, 66.6], atol=0.05)
     assert np.allclose(lo[:2], [100.0 - 44.2, 200.0 - 62.5 - 1.267 * 125.0], atol=0.05)
     assert len(meshes[7][1]) == 8 and "не вычислена" in row["geom_notes"][-1]
+
+
+def test_bezier_float_value_without_wrapper_is_read(monkeypatch):
+    """L-111: Bezier Float keeps its value in 0x7127/0x2501, but objects merged from libraries hold 0x2501 directly:
+    the parser read 0 and put 293 Sherov objects (plants, pots, a lamp) at the origin with no rotation - 3ds Max's
+    export showed them 9-18 m away."""
+    import maxread as R
+
+    class Ch:
+        def __init__(self, typ, data=None, kids=(), guid=None):
+            self.types, self.data, self.children, self.guid = typ, data, list(kids), guid
+
+        def get_first(self, t):
+            return next((c for c in self.children if c.types == t), None)
+
+    monkeypatch.setattr(R.M, "get_guid", lambda c: c.guid if c.guid is not None else c.types)
+    wrapped = Ch(0, kids=[Ch(0x7127, kids=[Ch(0x2501, (12.5,))])], guid=0x2007)
+    direct = Ch(0, kids=[Ch(0x2035, (2,)), Ch(0x2501, (1845.4215,))], guid=0x2007)
+    empty = Ch(0, kids=[Ch(0x2035, (2,))], guid=0x2007)
+    assert R.M.get_point is R.get_point
+    assert R.get_point(wrapped) == 12.5
+    assert abs(R.get_point(direct) - 1845.4215) < 1e-6
+    assert R.get_point(empty, 7.0) == 7.0
+
+
+def test_symmetry_numbers_the_mirror_as_3ds_max():
+    """L-111: 3ds Max numbers the mirrored vertices as it meets them going over the faces (each loop as stored) and
+    a mirrored face keeps its first vertex: [a b c d] -> [a' d' c' b']. The agent numbered them by vertex index -
+    the same shape, but an Edit Poly above moved other vertices (Sherov pCube1: 1461 mm off)."""
+    m = G.Mesh([[1, 0, 0], [2, 0, 0], [3, 0, 0], [1, 1, 0], [2, 1, 0], [3, 1, 0]], [[0, 1, 4, 3], [1, 2, 5, 4]])
+    mod = dict(pb={0: 0, 1: 1, 2: 1, 3: 0.01, 6: 1, 7: 0, 8: 0, 9: 0}, gizmo=np.eye(4), ctx_tm=np.eye(4))
+    G.mod_symmetry(m, mod)
+    src = [0, 1, 4, 3, 2, 5]                                  # met over face 0, then face 1
+    assert np.allclose(m.v[6:], m.v[src] * [-1, 1, 1])
+    assert m.f[2] == [6, 9, 8, 7] and m.f[3] == [7, 8, 11, 10]
+
+
+def test_cloned_faces_number_vertices_as_met():
+    """L-111: Edit Poly "clone face" numbers the new vertices as it meets them over the selected faces."""
+    m = G.plane({0: 10.0, 1: 20.0, 2: 1, 3: 2})              # 2 quads, 6 vertices
+    loop = list(m.f[1])
+    G.op_clone_faces(m, {1})
+    assert len(m.v) == 10 and np.allclose(m.v[6:], m.v[loop]) and m.f[-1] == [6, 7, 8, 9]
+
+
+def test_pcube1_is_rebuilt_vertex_by_vertex_as_3ds_max():
+    """L-111: Symmetry, then Edit Poly (delete, clone face, 4 vertex moves by index) - every vertex where 3ds Max
+    2027 has it (its export of Sherov), not only the same shape."""
+    truth = json.load(open(os.path.join(HERE, "data", "max_truth_sherov.json"), encoding="utf-8"))["pCube1"]
+    m, log = G.evaluate(_load("pCube1"))
+    assert len(m.v) == truth["n"] == 1464
+    idx = np.array([int(i) for i in truth["verts"]])
+    want = np.array(list(truth["verts"].values()))
+    assert np.abs(m.v[idx] - want).max() < 0.01

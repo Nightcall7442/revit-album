@@ -266,6 +266,8 @@ def _skip_unit(u, walls_rects, counters):
         return "trim / rail"
     if u.z0 > 1200:
         return "hangs high"
+    if u.hi[2] <= 30 and u.h <= 60:              # top at the floor: a covering / inlay (floors), not a podium (L-112)
+        return "in the floor"
     thin = min(w, d)
     nv = sum(p.nv for p in body)
     if thin <= 150 and max(w, d) >= 900 and u.h >= 900 and nv <= 40:

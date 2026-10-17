@@ -97,6 +97,8 @@ def test_export_files_are_read(tmp_path):
     v, f = ex.mesh(ex.nodes[0])
     assert v.shape == (4, 3) and f[1][1] == [0, 2, 3]
     assert ex.match("Wall", [499, 0, 0])["h"] == 2                              # same name: the nearest pivot
+    used = set()                                                                # two copies in one place (L-111)
+    assert ex.match("Wall", [499, 0, 0], used)["h"] == 2 and ex.match("Wall", [499, 0, 0], used)["h"] == 1
     assert ex.skipped(ex.nodes[1]).startswith("не рендерится")
     assert ex.skipped(ex.nodes[2]) == "скрыт в сцене"
     assert ex.active_mods(ex.nodes[0]) == ["Edit_Poly"]
@@ -109,6 +111,91 @@ def test_the_max_script_exports_what_the_reader_expects():
                 "WriteFloat", "WriteLong", "WriteShort", "nodeGetBoundingBox", ".sda.json", ".sda.bin", "enabled"):
         assert key in ms, key
     assert ms.count("(") == ms.count(")")
+
+
+def _export(tmp_path, nodes, meshes):
+    from importers import max_export as MX
+    j, b = str(tmp_path / "s.sda.json"), str(tmp_path / "s.sda.bin")
+    MX.write_fixture(j, b, nodes, meshes, mm_per_unit=10.0)
+    return MX, j, b
+
+
+def _nd(n, h, hidden=False, mods=(), cls="Editable_Poly", sup="GeometryClass"):
+    return dict(n=n, h=h, cls=cls, top=cls, sup=sup, tm=[[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]],
+                bb=[[0, 0, 0], [1, 1, 1]], mods=[[m, m, True, True] for m in mods], hidden=hidden, node_hidden=hidden,
+                renderable=True)
+
+
+def test_export_offsets_of_max_2024_are_read(tmp_path):
+    """L-110: 3ds Max 2024+ gives ftell as Integer64 - the script wrote "mesh":[0L,4,2] and the JSON did not parse."""
+    tri = [[0, 1, 2], [0, 2, 3]]
+    MX, j, b = _export(tmp_path, [_nd("A", 1), _nd("B", 2)],
+                       {"A": ([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], tri), "B": ([[0, 0, 0], [2, 0, 0], [2, 2, 0]], [[0, 1, 2]])})
+    txt = open(j, encoding="utf-8").read()
+    import re
+    txt = re.sub(r'"mesh": \[(\d+),', r'"mesh":[\1L,', txt)
+    assert '"mesh":[0L,' in txt and '"mesh":[76L,' in txt
+    open(j, "w", encoding="utf-8").write(txt)
+    ex = MX.Export(j, b)
+    v, f = ex.mesh(ex.nodes[1])
+    assert v.shape == (3, 3) and v[1][0] == 2.0
+
+
+def test_export_of_a_max_without_the_plugin_is_not_the_mesh(tmp_path):
+    """L-110: exported where FloorGenerator is not installed, the modifier is "Missing_OSM" and did nothing - the
+    mesh is the bare outline; the object keeps the agent's own evaluation and names the missing plugin."""
+    from importers import max_scene as S
+    MX, j, b = _export(tmp_path, [_nd("Floor_FG001", 1, mods=["Edit_Poly", "Uvwmap", "Missing_OSM"]), _nd("Wall", 2),
+                                  _nd("Corona Light001", 3, cls="Missing_Light", sup="light")],
+                       {"Floor_FG001": ([[0, 0, 0], [1, 0, 0], [1, 1, 0]], [[0, 1, 2]]),
+                        "Wall": ([[0, 0, 0], [1, 0, 0], [1, 1, 0]], [[0, 1, 2]])})
+    ex = MX.Export(j, b)
+    assert ex.missing(ex.nodes[0]) == ["Missing_OSM"] and ex.missing(ex.nodes[1]) == []
+    assert ex.missing(ex.nodes[2]) == ["Missing_Light"]
+    assert S._missing_mods(["Edit Poly", "UVW Map", "FloorGenerator"], ex.nodes[0]) == ["FloorGenerator"]
+
+
+def test_most_of_the_scene_hidden_is_the_working_state(tmp_path):
+    """L-110: Sherov was saved with 1548 of 1609 objects hidden (only cameras shown): hiding is the designer's
+    working state, not "not in the project". A few hidden objects among visible ones are left out as before."""
+    from importers import max_scene as S
+    tri = [[0, 1, 2]]
+    pts = [[0, 0, 0], [1, 0, 0], [1, 1, 0]]
+    MX, j, b = _export(tmp_path, [_nd("A", 1, hidden=True), _nd("B", 2, hidden=True), _nd("C", 3),
+                                  _nd("Cam", 4, cls="Missing_Camera", sup="camera")],
+                       {"A": (pts, tri), "B": (pts, tri), "C": (pts, tri)})
+    ex = MX.Export(j, b)
+    assert ex.hidden_ignored and ex.skipped(ex.nodes[0]) is None
+    MX, j, b = _export(tmp_path, [_nd("A", 1, hidden=True), _nd("B", 2), _nd("C", 3)],
+                       {"A": (pts, tri), "B": (pts, tri), "C": (pts, tri)})
+    ex = MX.Export(j, b)
+    assert not ex.hidden_ignored and ex.skipped(ex.nodes[0]) == "скрыт в сцене"
+    rows = [dict(name="A", hidden_flag=True), dict(name="B", hidden_flag=True), dict(name="C", hidden_flag=False),
+            dict(name="Light")]
+    hid, n, ignored = S.hidden_state(rows)
+    assert ignored and n == 3 and not any(r.get("render_off") for r in rows)
+    rows = [dict(name="A", hidden_flag=True), dict(name="B", hidden_flag=False), dict(name="C", hidden_flag=False)]
+    hid, n, ignored = S.hidden_state(rows)
+    assert not ignored and [r["name"] for r in rows if r.get("render_off")] == ["A"]
+
+
+def test_the_max_script_uses_no_reserved_words():
+    """L-110: "local off = ftell bs" - off is a MAXScript constant (= false): the script stopped with a syntax error
+    on its first real run. Its file offset is Integer64 in 3ds Max 2024+: written without the "L"."""
+    import re
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    ms = open(os.path.join(here, "max", "sda_export.ms"), encoding="utf-8").read()
+    code = "\n".join(ln.split("--")[0] for ln in ms.splitlines())
+    reserved = {"about", "and", "animate", "as", "at", "attributes", "by", "case", "catch", "collect", "continue",
+                "coordsys", "do", "else", "exit", "fn", "for", "from", "function", "global", "if", "in", "local",
+                "macroscript", "mapped", "max", "not", "of", "off", "on", "or", "parameters", "persistent", "plugin",
+                "private", "public", "rcmenu", "return", "rollout", "set", "struct", "then", "throw", "to", "tool",
+                "try", "undo", "utility", "when", "where", "while", "with", "true", "false", "undefined", "ok"}
+    names = re.findall(r"\b(?:local|global)\s+([A-Za-z_]\w*)", code)
+    names += [p for m in re.finditer(r"\bfn\s+\w+\s+([\w\s]*?)=", code) for p in m.group(1).split()]
+    names += re.findall(r"\bfor\s+([A-Za-z_]\w*)\s+(?:=|in)\b", code)
+    assert names and not [n for n in names if n.lower() in reserved]
+    assert re.search(r'trimRight \(\w+ as string\) "L"', code)
 
 
 # ------------------------------------------------------------------ the check of the album against the scene
@@ -446,3 +533,93 @@ def test_a_partition_through_doors_is_the_agents_not_the_door(tmp_path):
     src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "importers",
                             "scene_draft.py"), encoding="utf-8").read()
     assert 'source="перегородка по двери %s"' in src
+
+
+def test_a_wall_with_piers_is_cut_into_its_rectangles():
+    """L-112: Sherov's Plane021 (ProBoolean, known only from 3ds Max's export): a 130 mm wall with a passage and two
+    120 mm piers. Its box (250 mm over 7 m) became one thick wall over the shelves of the toilets. The cut is split into
+    rectangles; the sides of the passage, open in the mesh, are closed."""
+    from importers import max_scene as S
+    segs = [[9172, 193, 12802, 193], [13702, 193, 16202, 193], [9172, 193, 9172, 323], [16202, 193, 16202, 323],
+            [9172, 323, 12802, 323], [13702, 323, 16202, 323], [12382, 323, 12382, 443], [12382, 443, 12802, 443],
+            [13702, 443, 13902, 443], [13902, 443, 13902, 323]]          # passage sides x 12802 / 13702: open
+    parts = S.plan_parts(segs)
+    assert sorted(parts) == sorted([[9172, 193, 12802, 323], [13702, 193, 16202, 323], [12382, 323, 12802, 443],
+                                    [13702, 323, 13902, 443]])
+    door_gap = [[0, 0, 900, 0], [0, 200, 900, 200], [0, 0, 0, 200], [900, 0, 900, 200],
+                [1800, 0, 4000, 0], [1800, 200, 4000, 200], [1800, 0, 1800, 200], [4000, 0, 4000, 200]]
+    assert S.plan_parts(door_gap) is None                                   # one straight wall: its gap is a door
+    assert S.plan_parts([[0, 0, 4000, 0], [0, 200, 4000, 200], [0, 0, 0, 200], [4000, 0, 4000, 200]]) is None
+
+
+def test_a_wall_from_a_piece_of_a_cut_object_is_not_an_error(tmp_path):
+    from sdalbum import audit
+    row = _row("Plane021", [9172, 193, 16202, 443], plan_parts=[[9172, 193, 12802, 323], [13702, 193, 16202, 323],
+                                                                [12382, 323, 12802, 443], [13702, 323, 13902, 443]])
+    base = _scene(tmp_path, [row])
+    d = _proj([dict(id="W2", kind="existing", rect=[8172, -807, 11802, -677], source="Plane021")])
+    iss, sm = audit.run(d, base)
+    assert not [i for i in iss if i["code"] == "SCENE_GEOMETRY"]
+
+
+def test_calibration_compares_vertex_by_vertex_then_as_shapes():
+    """L-111: sda.py calibrate - the agent's mesh against 3ds Max's: same index = exact; same points in another
+    order = same_shape (an Edit Poly above would move other vertices); else different / count."""
+    import numpy as np
+    from importers import max_calibrate as C
+    a = np.array([[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0]], float)
+    assert C.compare(a, a + 0.01, 10.0)[0] == "exact"
+    assert C.compare(a, a[[1, 0, 3, 2]], 10.0)[0] == "same_shape"
+    assert C.compare(a, a + [0, 0, 5], 10.0)[0] == "different"
+    assert C.compare(a, a[:3], 10.0)[0] == "count"
+
+
+def test_an_object_of_a_missing_plugin_asks_for_the_plugin(tmp_path):
+    """L-110: the export was made in a 3ds Max without FloorGenerator - the album asks for an export where the
+    plugin is installed, not for "an export" it already has."""
+    from sdalbum import audit
+    row = _row("Layer:0", [0, 0, 4000, 3000], z0=0, z1=10, geom="unknown", export_missing=["FloorGenerator"])
+    base = _scene(tmp_path, [row], export="s.sda.json")
+    d = _proj([], floors=[dict(id="П1", src="Layer:0", poly=[[0, 0], [4000, 0], [4000, 3000], [0, 3000]])])
+    iss, sm = audit.run(d, base)
+    un = [i for i in iss if i["code"] == "SCENE_UNVERIFIED"]
+    assert un and "FloorGenerator" in un[0]["msg"] and "плагин" in un[0]["msg"]
+
+
+def test_an_empty_mesh_of_3ds_max_is_no_geometry(tmp_path):
+    """L-112: Edit Poly deleted every face of Sherov's Plane004 (a Plane primitive): 3ds Max exports 0 vertices.
+    The row kept the primitive's footprint and became a pilaster wall over a pipe box."""
+    from importers import max_scene as S
+    MX, j, b = _export(tmp_path, [_nd("Plane004", 8, mods=["Edit_Poly"], cls="Plane"), _nd("Wall", 9)],
+                       {"Plane004": (np.zeros((0, 3)), np.zeros((0, 3), int)),
+                        "Wall": ([[0, 0, 0], [1, 0, 0], [1, 1, 0]], [[0, 1, 2]])})
+    ex = MX.Export(j, b)
+    meshes = {}
+    row = dict(idx=1, name="Plane004", footprint=[[0, 0], [20, 0], [20, 40], [0, 40]])
+    S.take_export(row, ex, ex.nodes[0], meshes)
+    assert "footprint" not in row and row["skip"] and 1 not in meshes
+    row = dict(idx=2, name="Wall", footprint=[[0, 0], [1, 0], [1, 1]])
+    S.take_export(row, ex, ex.nodes[1], meshes)
+    assert "footprint" not in row and not row.get("skip") and 2 in meshes and row["nverts"] == 3
+
+
+def test_a_floor_base_plane_and_a_street_plane_are_not_lost_coverings(tmp_path):
+    """L-112: with 3ds Max's export Sherov's Layer:004 (the CORD plane under the FloorGenerator tiles of the floors)
+    and Plane11503 (2.8 × 8.2 m, half of it outside the building) became «покрытие пола не учтено» errors. The plane
+    of the material of an album floor is that floor; a plane mostly outside the rooms is not the interior's."""
+    from sdalbum import audit
+    walls = [dict(id="W1", kind="existing", rect=[-200, -200, 6200, 0]), dict(id="W2", kind="existing", rect=[-200, 4000, 6200, 4200]),
+             dict(id="W3", kind="existing", rect=[-200, 0, 0, 4000]), dict(id="W4", kind="existing", rect=[6000, 0, 6200, 4000])]
+    rows = [_row("Layer:0", [1000, 1000, 7000, 5000], z0=0, z1=10, mods=["FloorGenerator"], materials=["CORD 120x60"]),
+            _row("Layer:004", [1000, 1000, 7000, 5000], z0=0, z1=0.5, materials=["CORD 120x60"]),
+            _row("Plane11503", [5000, -3000, 7500, 3000], z0=4, z1=6, materials=["Material #2147470841"]),
+            _row("Plane77", [2000, 2000, 4000, 4000], z0=0, z1=2, materials=["Wood"])]
+    for i, w in enumerate(walls):
+        x0, y0, x1, y1 = w["rect"]
+        rows.append(_row("Wall%d" % i, [x0 + 1000, y0 + 1000, x1 + 1000, y1 + 1000]))
+        w["source"] = "Wall%d" % i
+    base = _scene(tmp_path, rows)
+    d = _proj(walls, rooms=[dict(name="Зал", seed=[3000, 2000])], floors=[dict(id="П1", src="Layer:0", rooms=["Зал"])])
+    iss, sm = audit.run(d, base)
+    miss = [i["obj"] for i in iss if i["code"] == "SCENE_MISSING"]
+    assert miss == ["Plane77"]                    # a covering inside the room the album does not have: still found

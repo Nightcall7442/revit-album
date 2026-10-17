@@ -11,6 +11,10 @@
                                                 Revit sheet (flat DXF import + images); .dyn + pyRevit .py
   python3 sda.py import-max scene.max OUT [--units cm] [--cut 1100]
                                                 inventory + plan sections of a 3ds Max scene
+  python3 sda.py calibrate scene.max [report.json]
+                                                the agent's own reading of the scene against 3ds Max's export
+                                                (<scene>.sda.json/.bin, scripts/max/sda_export.ms): transforms and
+                                                every rebuilt mesh vertex by vertex - what to teach the engine next
   python3 sda.py import-dxf plan.dxf OUT [--window x0,y0,x1,y1] [--units mm]
                                                 draft project.json from a DWG/DXF plan
   python3 sda.py fix project.json [--dry]        safe automatic corrections (5-mm module, hot water left, points on
@@ -129,6 +133,11 @@ def cmd_import_max(args):
     kw = {k: v for k, v in (("units", _opt(args, "--units")), ("cut", _opt(args, "--cut", float)),
                             ("floor", _opt(args, "--floor", float))) if v is not None}
     max_scene.main(args[0], args[1], **kw)
+
+
+def cmd_calibrate(args):
+    from importers import max_calibrate
+    max_calibrate.run(args[0], args[1] if len(args) > 1 else None)
 
 
 def cmd_import_dxf(args):
@@ -290,7 +299,7 @@ def cmd_test(args):
 
 
 CMDS = {"doctor": cmd_doctor, "validate": cmd_validate, "build": cmd_build, "qa": cmd_qa, "revit": cmd_revit,
-        "import-max": cmd_import_max, "import-dxf": cmd_import_dxf, "test": cmd_test, "fix": cmd_fix,
+        "import-max": cmd_import_max, "calibrate": cmd_calibrate, "import-dxf": cmd_import_dxf, "test": cmd_test, "fix": cmd_fix,
         "propose": cmd_propose, "find": cmd_find, "edit": cmd_edit, "undo": cmd_undo, "history": cmd_history,
         "diff": cmd_diff, "make": cmd_make, "import-pdf": cmd_import_pdf, "dwg": cmd_dwg}
 

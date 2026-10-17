@@ -50,6 +50,19 @@ def _rect(r):
     return None
 
 
+def _rects(r, near=None):
+    """Plan rectangles of a scene object: the pieces of its cut when the cut is not one rectangle (plan_parts, L-112)
+    - those touching `near` if given - else its box."""
+    parts = r.get("plan_parts")
+    if parts:
+        if near is not None:
+            hit = [q for q in parts if q[0] < near[2] + 5 and q[2] > near[0] - 5 and q[1] < near[3] + 5 and q[3] > near[1] - 5]
+            return hit or parts
+        return parts
+    got = _rect(r)
+    return [got[0]] if got else []
+
+
 def _split(s):
     return [x.strip() for x in re.split(r"\s*\+\s*|/", str(s or "")) if x.strip()]
 
@@ -192,10 +205,15 @@ def run(d, base_dir):
             if r.get("geom") == "unknown" and whats and not all(w.startswith("вывеска") for w in whats):
                 unver.setdefault(nm, (r, whats))     # (a sign gives its words and its pivot - both exact)
     for nm, (r, whats) in sorted(unver.items()):
-        issues.append(dict(code="SCENE_UNVERIFIED", level="error", obj=nm,
-                           msg="%s: объект сцены «%s» - %s; размеры в альбоме не проверены, нужна выгрузка 3ds Max "
-                               "(scripts/max/sda_export.ms)" % (", ".join(sorted(set(whats))[:3]), nm,
-                                                                "; ".join((r.get("geom_notes") or [])[-2:]) or "модификаторы")))
+        if r.get("export_missing"):              # exported where a plugin of the scene was not installed (L-110)
+            msg = "%s: объект сцены «%s» - в 3ds Max, где делали выгрузку, нет плагина (%s); размеры в альбоме не " \
+                  "проверены - выгрузить на компьютере с этим плагином" % (
+                      ", ".join(sorted(set(whats))[:3]), nm, ", ".join(r["export_missing"]))
+        else:
+            msg = "%s: объект сцены «%s» - %s; размеры в альбоме не проверены, нужна выгрузка 3ds Max " \
+                  "(scripts/max/sda_export.ms)" % (", ".join(sorted(set(whats))[:3]), nm,
+                                                   "; ".join((r.get("geom_notes") or [])[-2:]) or "модификаторы")
+        issues.append(dict(code="SCENE_UNVERIFIED", level="error", obj=nm, msg=msg))
     # 2. wall outlines against their sources
     for w in d.get("walls", []):
         if w.get("kind") == "box" or not w.get("rect"):
@@ -212,18 +230,16 @@ def run(d, base_dir):
             continue                             # reported above
         mine = w.get("_rect0") or w["rect"]
         best = None
+        local = [mine[0] - sx, mine[1] - sy, mine[2] - sx, mine[3] - sy]
         for r in rs:                             # the same name twice in a scene: the closest one
-            got = _rect(r)
-            if got is None:
-                continue
-            g = got[0]
-            sc = [g[0] + sx, g[1] + sy, g[2] + sx, g[3] + sy]
-            dev = max(abs(a - b) for a, b in zip(sc, mine))
-            if best is None or dev < best[0]:
-                best = (dev, sc, r)
+            for g in _rects(r):                  # (a wall object cut into pieces: the closest piece)
+                sc = [g[0] + sx, g[1] + sy, g[2] + sx, g[3] + sy]
+                dev = max(abs(a - b) for a, b in zip(sc, mine))
+                if best is None or dev < best[0]:
+                    best = (dev, sc, r)
         if best is None or len(names) > 1:
             if len(names) > 1 and rs:            # a wall built from several objects: their union
-                gs = [_rect(r)[0] for r in rs if _rect(r)]
+                gs = [g for r in rs for g in _rects(r, local)]
                 if gs:
                     sc = [min(g[0] for g in gs) + sx, min(g[1] for g in gs) + sy, max(g[2] for g in gs) + sx, max(g[3] for g in gs) + sy]
                     best = (max(abs(a - b) for a, b in zip(sc, mine)), sc, rs[0])
@@ -257,6 +273,18 @@ def run(d, base_dir):
         ext = None
     miss = []
     outside = 0
+    floor_mats = set()                           # materials of the scene objects the album's floors come from
+    for f in d.get("floors", []):
+        for nm_ in _split(f.get("src")):
+            for r in by_name.get(nm_, []):
+                floor_mats.update(m for m in (r.get("materials") or []) if m)
+    rooms_u = None
+    try:
+        from sdalbum import model as _M
+        from shapely.ops import unary_union as _uu
+        rooms_u = _uu([rm["shp"] for rm in _M.Project(d, base_dir).rooms])
+    except Exception:
+        pass
     for r in rows:
         nm = r.get("name") or ""
         if r.get("skip") or not nm:
@@ -266,6 +294,16 @@ def run(d, base_dir):
         what = _significant(r, storey)
         if what is None:
             continue
+        if what.startswith("покрытие пола"):     # (L-112) the plane under a tiled floor of the album (its material),
+            if floor_mats & set(r.get("materials") or []):     # a covering mostly outside the rooms (a street /
+                continue                         # terrace plane) - not a covering the album lost
+            if rooms_u is not None and not rooms_u.is_empty:
+                from shapely.geometry import box as _box
+                (x0_, y0_, x1_, y1_), _, _ = _rect(r)
+                rb = _box(x0_ + sx, y0_ + sy, x1_ + sx, y1_ + sy)
+                if rb.area > 0 and rb.intersection(rooms_u).area < 0.5 * rb.area:
+                    outside += 1
+                    continue
         if DECOR.search(nm) and "_FG" not in nm:
             continue
         (x0, y0, x1, y1), z0, z1 = _rect(r)

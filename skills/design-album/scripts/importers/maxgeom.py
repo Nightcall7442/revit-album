@@ -349,12 +349,16 @@ def op_delete_verts(m, verts, iso=True):
 
 
 def op_clone_faces(m, faces):
-    """Clone selected faces to a new element: new vertices in vertex order, new faces in face order."""
+    """Clone selected faces to a new element: new vertices as they are met going over the faces in order (each loop
+    as stored - checked against 3ds Max's export, Sherov pCube1, L-111), new faces in face order."""
     fs = sorted(faces)
-    vs = sorted(set(x for fi in fs for x in m.f[fi]))
+    vs = []
     vmap = {}
-    for x in vs:
-        vmap[x] = len(m.v) + len(vmap)
+    for fi in fs:
+        for x in m.f[fi]:
+            if x not in vmap:
+                vmap[x] = len(m.v) + len(vs)
+                vs.append(x)
     m.v = np.vstack([m.v, m.v[vs]]) if vs else m.v
     first = len(m.f)
     for fi in fs:
@@ -814,20 +818,26 @@ def _mirror_append(m, q, a, T, Ti, thr):
     qm[:, a] = -qm[:, a]
     pm = (Ti[:3, :3] @ qm.T).T + Ti[:3, 3]
     seam = set(np.where(np.abs(q[:, a]) <= (thr if thr is not None else -1))[0]) if thr is not None else set()
-    vmap = {}
-    newv = []
-    for i in range(nv):
-        if i in seam:
-            vmap[i] = i
-        else:
-            vmap[i] = nv + len(newv)
-            newv.append(pm[i])
-    if newv:
-        m.v = np.vstack([m.v, np.array(newv)])
+    # 3ds Max numbers the mirrored vertices as it meets them going over the faces in order (each face's loop as
+    # stored), and each mirrored face keeps its first vertex and runs the other way: [a b c d] -> [a' d' c' b'].
+    # Checked vertex by vertex against 3ds Max's export (Sherov pCube9, 4544 vertices; L-111).
+    vmap = {i: i for i in seam}
+    order = []
+    for loop in m.f:
+        for x in loop:
+            if x not in vmap:
+                vmap[x] = nv + len(order)
+                order.append(x)
+    for i in range(nv):                                       # vertices of no face: after the others
+        if i not in vmap:
+            vmap[i] = nv + len(order)
+            order.append(i)
+    if order:
+        m.v = np.vstack([m.v, pm[np.array(order)]])
     nf = len(m.f)
     for fi in range(nf):
-        loop = [vmap[x] for x in m.f[fi]][::-1]
-        m.f.append(loop)
+        loop = [vmap[x] for x in m.f[fi]]
+        m.f.append([loop[0]] + loop[1:][::-1])
         m.mat.append(m.mat[fi])
     for i in seam:
         m.v[i, :] = (Ti[:3, :3] @ np.where(np.arange(3) == a, 0.0, q[i]) + Ti[:3, 3])
@@ -1588,6 +1598,22 @@ class FaceList:
 
     def __bool__(self):
         return len(self.mat) > 0
+
+
+class TriList(FaceList):
+    """Triangles of a mesh 3ds Max exported (N x 3, material id per triangle), kept as arrays - a scene of 16 million
+    triangles as Python lists did not fit in the memory of the importer (L-110)."""
+
+    def __init__(self, tris, mats):
+        self.tris = np.asarray(tris, dtype=np.int32).reshape(-1, 3)
+        self.mat = np.asarray(mats, dtype=np.int32)
+
+    def __getitem__(self, i):
+        return int(self.mat[i]), self.tris[i].tolist()
+
+    def __iter__(self):
+        for i in range(len(self.mat)):
+            yield int(self.mat[i]), self.tris[i].tolist()
 
 
 # ---- FloorGenerator --------------------------------------------------------------------------------------------------

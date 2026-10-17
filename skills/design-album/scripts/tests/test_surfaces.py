@@ -217,3 +217,19 @@ def test_elevation_scale_steps_down_for_a_10_m_wall():
     k = SD.elev_scale(E_(), {"heights": True}, SD.SHEET_W - SD.KEY_W)
     assert k in SD.ELEV_SCALES and k > 25 and (10500 + 520 + 720) / k <= SD.SHEET_W - SD.KEY_W
     assert SD.elev_scale(type("E", (), {"L": 3000.0, "H": 3000.0})(), {}, SD.SHEET_W) == 25
+
+
+def test_a_piece_running_past_the_wall_end_is_cut_in_the_elevation(made, tmp_path):
+    """L-112: Sherov's vinyl shelves (from 3ds Max's export) run past the end of wall A: the elevation drew them
+    beyond the wall and their label left the view (CONTENT_CLIPPED). A front is cut at the wall's ends."""
+    import copy as cp
+    from sdalbum import album, model
+    d = cp.deepcopy(made["d"])
+    d["elevations"].append(dict(group="Обеденный зал", room="Обеденный зал", a=[0, 9000], b=[3000, 9000], height=3000,
+                                proposed=True, base="paint", feature=True, labels=[], fixtures=[], label="Б",
+                                items=[dict(type="poly", pts=[[-3000, 900], [400, 900], [400, 2100], [-3000, 2100]],
+                                            label="М-99")]))
+    P = model.Project(d, made["base"])
+    A = album.Album(P, str(tmp_path / "out"), sheets=["elevations"])
+    A.build(heal=False)
+    assert not [i for i in A.check_clipping() if i["code"] == "CONTENT_CLIPPED"]

@@ -83,7 +83,10 @@ def _tri(faces):
 
 def section(v, faces, h):
     """Segments of the mesh cut by plane z = h."""
-    tris = np.array(list(_tri(faces)), dtype=np.int64)
+    if hasattr(faces, "tris"):                   # a triangle list of the export: already an array
+        tris = np.asarray(faces.tris, dtype=np.int64)
+    else:
+        tris = np.array(list(_tri(faces)), dtype=np.int64)
     if not len(tris):
         return []
     tris = tris[(tris < len(v)).all(1)]
@@ -243,6 +246,56 @@ def _lattice_proxy(R, msh, W, row, meshes, k=10.0):
     return True
 
 
+def hidden_state(rows):
+    """Objects hidden at save time (flag 0x100000). A few hidden ones: variants left out - "render_off" (most
+    likely not in the renders). Most of the scene hidden (Sherov: all but the cameras): the designer's working
+    state, not a decision - nothing is marked (L-110). -> (hidden rows, geometry rows, ignored)"""
+    hid = [r for r in rows if r.get("hidden_flag")]
+    geo_n = sum(1 for r in rows if "hidden_flag" in r)
+    ignored = bool(geo_n) and len(hid) * 2 >= geo_n
+    if not ignored:
+        for r in hid:
+            r["render_off"] = True
+    return hid, geo_n, ignored
+
+
+def take_export(row, ex, nd, meshes):
+    """The row takes 3ds Max's own result: its mesh after all modifiers (the truth, not the primitive's footprint);
+    an empty mesh - 3ds Max made nothing of the object (Edit Poly deleted every face) - is no geometry, not the
+    primitive: Sherov's Plane004/005 became pilaster walls over two pipe boxes (L-112)."""
+    row["geom"] = "export"
+    got = ex.mesh(nd)
+    if got is not None and len(got[0]):
+        vw, ftri = got
+        row["bbox"] = [vw.min(0).tolist(), vw.max(0).tolist()]
+        row["nverts"] = int(len(vw))
+        meshes[row["idx"]] = (row.get("name"), vw, ftri)
+        row.pop("footprint", None)
+    elif got is not None and nd.get("sup") == "GeometryClass":
+        row.pop("footprint", None)
+        row["skip"] = row.get("skip") or "пустая геометрия после модификаторов (3ds Max)"
+
+
+def _key(c):
+    return "".join(ch for ch in str(c).lower() if ch.isalnum())
+
+
+def _missing_mods(mods, nd):
+    """Names (as in the .max) of the modifiers the exporting 3ds Max did not have: the scene's modifiers that no
+    loaded class of the export accounts for; "плагин модификатора" when they cannot be told apart."""
+    have = [_key(m[0]) for m in nd.get("mods") or [] if not str(m[0]).startswith("Missing_")]
+    out = []
+    for m in mods:
+        k = _key(m)
+        if k in have:
+            have.remove(k)
+        else:
+            out.append(m)
+    if any(str(c).startswith("Missing_") for c in (nd.get("cls"), nd.get("top"))):
+        out.append("объект %s" % nd.get("cls"))
+    return out or ["плагин модификатора"]
+
+
 def main(path, out, units=None, cut=1100.0, floor=0.0):
     import maxread as R
     import maxeval as EV
@@ -262,6 +315,7 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
     tex_cache = {}
     cache = {}
     rows, meshes = [], {}
+    used_h = set()                           # export nodes already matched (two copies in one place, L-111)
     for node in R.iter_nodes():
         name = R.node_name(node)
         loc, msh, mat, lyr = R.local_matrix(node)
@@ -269,13 +323,13 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         cls = R.cls_name(base) if base is not None else None
         row = dict(idx=node.number, name=name, cls=cls, mods=R.modifiers(msh) if msh is not None else [],
                    material=R.mat_name(mat), layer=R.layer_name(lyr))
-        try:                                 # node flags (chunk 0x0960: parent, flags); 0x100000 is set on every
-            fch = node.get_first(0x0960)     # rendered object of the scenes seen - off: probably not rendered
+        try:                                 # node flags (chunk 0x0960: parent, flags); 0x100000 - hidden in the
+            fch = node.get_first(0x0960)     # scene (checked against 3ds Max's isHidden on Sherov, L-110)
             fb = bytes(fch.data) if fch is not None and not isinstance(fch.data, tuple) else b""
             if len(fb) >= 8:
                 row["flags"] = struct.unpack_from("<I", fb, 4)[0]
-                if cls not in SKIP_CLASSES and cls is not None and not row["flags"] & 0x100000:
-                    row["render_off"] = True
+                if cls not in SKIP_CLASSES and cls is not None:
+                    row["hidden_flag"] = bool(row["flags"] & 0x100000)
         except Exception:
             pass
         if mat is not None and assets:          # texture files name what the material is (tile, plaster, brick)
@@ -299,8 +353,8 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
             row["parent"] = None
         try:
             W = np.array(R.world_matrix(node, cache) @ R.offset_matrix(node))
-        except Exception as ex:
-            row["err"] = repr(ex)
+        except Exception as e_:              # (not "ex": that is the export)
+            row["err"] = repr(e_)
             rows.append(row)
             continue
         if base is not None and cls not in SKIP_CLASSES:
@@ -310,21 +364,18 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                 fp = _footprint(cls, prm, W)
                 if fp:
                     row["footprint"], row["z0"], row["z1"] = fp
-            nd = ex.match(name, W[:3, 3]) if ex is not None else None
+            nd = ex.match(name, W[:3, 3], used_h) if ex is not None else None
+            miss = MX.Export.missing(nd) if nd is not None else []
             if nd is not None:               # 3ds Max's own result: flags and the mesh after all modifiers
-                row["geom"] = "export"
                 row["export_h"] = nd.get("h")
                 why = ex.skipped(nd)
                 if why:
                     row["skip"] = why
                 row["mods_on"] = ex.active_mods(nd)
-                got = ex.mesh(nd)
-                if got is not None and len(got[0]):
-                    vw, ftri = got
-                    row["bbox"] = [vw.min(0).tolist(), vw.max(0).tolist()]
-                    row["nverts"] = int(len(vw))
-                    meshes[row["idx"]] = (name, vw, ftri)
-                    row.pop("footprint", None)   # the mesh is the truth, not the primitive
+            if miss:                         # that 3ds Max had no FloorGenerator / ...: its mesh is not the scene's
+                row["export_missing"] = _missing_mods(row.get("mods") or [], nd)
+            if nd is not None and not miss:
+                take_export(row, ex, nd, meshes)
             else:
                 try:
                     import maxstack as MS
@@ -367,6 +418,7 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                     row["lines"] = [dict(p=[[float(q[0]), float(q[1])] for q in p], closed=cl) for p, cl in pw]
                     row["lines_z"] = float(np.mean([p[:, 2].mean() for p, _ in pw]))
         rows.append(row)
+    hid, geo_n, hidden_ignored = hidden_state(rows)
     u = units
     H = None
     if not u:
@@ -393,8 +445,12 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                 row["z0"], row["z1"] = float(vw[:, 2].min()), float(vw[:, 2].max())
                 row["replayed"] = True
         if evr["status"] == "unknown":
-            row["note"] = "геометрия не проверена: %s - нужна выгрузка 3ds Max (scripts/max/sda_export.ms)" % (
-                "; ".join(evr["notes"][-3:]) or ", ".join(row.get("mods") or []))
+            if row.get("export_missing"):
+                row["note"] = "геометрия не проверена: в 3ds Max, где делали выгрузку, нет плагина (%s) - выгрузить " \
+                              "на компьютере с плагином" % ", ".join(row["export_missing"])
+            else:
+                row["note"] = "геометрия не проверена: %s - нужна выгрузка 3ds Max (scripts/max/sda_export.ms)" % (
+                    "; ".join(evr["notes"][-3:]) or ", ".join(row.get("mods") or []))
             _lattice_proxy(R, msh, W, row, meshes, k)
     for row in rows:
         if row.get("mods") and "bbox" not in row and not row.get("footprint") and row.get("class") not in SKIP_CLASSES \
@@ -418,7 +474,8 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
                 ln["p"] = [[round(x * k, 1), round(y * k, 1)] for x, y in ln["p"]]
             r["lines_z"] = round(r["lines_z"] * k, 1)
     json.dump(dict(source=os.path.basename(path), units=u, unit_mm=k, storey_guess=H, nodes=rows,
-                   export=os.path.basename(MX.paths(path)[0]) if ex is not None else None),
+                   export=os.path.basename(MX.paths(path)[0]) if ex is not None else None,
+                   hidden=dict(count=len(hid), of=geo_n, ignored=hidden_ignored)),
               open(os.path.join(out, "inventory.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     # sections
     cuts = {"floor": floor + 250.0, "cut": floor + cut, "ceiling": None}
@@ -442,6 +499,23 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
         _plot(rows, sec[key], os.path.join(out, "plan_%s.png" % key), "%s: z = %.0f мм" % (key, sec[key]["h"]))
     _summary(rows, u, H, sec, os.path.join(out, "inventory.md"), path)
     slab = H * k if H and H * k > 2000 else None      # wall height of the scene = floor-to-slab
+    from importers.scene_draft import furniture_kind
+    for r in rows:                               # wall objects whose cut is not one rectangle (L-112)
+        key = "%s#%d" % (r.get("name"), r.get("idx", -1))
+        segs = sec["cut"]["objects"].get(key)
+        if not segs or not r.get("bbox") or furniture_kind(r.get("name"))[0]:
+            continue
+        (bx0, by0, bz0), (bx1, by1, bz1) = r["bbox"]
+        if bz0 > floor + 150 or bz1 - bz0 < 2000:
+            continue
+        parts = plan_parts(segs)
+        if parts:
+            r["plan_parts"] = [[round(c, 1) for c in q] for q in parts]
+    if any(r.get("plan_parts") for r in rows):   # the scene check compares walls with these pieces
+        p_inv = os.path.join(out, "inventory.json")
+        inv = json.load(open(p_inv, encoding="utf-8"))
+        inv["nodes"] = rows
+        json.dump(inv, open(p_inv, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     live = [r for r in rows if not r.get("skip")]       # hidden / not rendered objects are not in the project
     d = _draft(live, os.path.join(out, "draft_project.json"), ceil, slab)
     _surfaces(live, meshes, k, d, out)
@@ -522,11 +596,87 @@ def _summary(rows, u, H, sec, md, path):
     open(md, "w", encoding="utf-8").write("\n".join(lines) + "\n")
 
 
+def plan_parts(segs, fill=0.85):
+    """The cut of a wall object that is not one rectangle (an L, a wall with pilasters - Sherov's Plane021: 130 mm
+    wall + two 120 mm piers, its box 250 mm thick over 7 m) -> its rectangles, or None when the cut is one rectangle
+    (a door gap in one straight wall stays the wall's opening), not axis-parallel, or not closed. Strips across the
+    wall between the vertices' levels, equal neighbours merged (L-112)."""
+    if not segs or any(abs(s[0] - s[2]) > 1.0 and abs(s[1] - s[3]) > 1.0 for s in segs):
+        return None
+    from shapely.geometry import LineString, Point
+    from shapely.ops import polygonize, unary_union
+    lines = unary_union([LineString([(s[0], s[1]), (s[2], s[3])]) for s in segs
+                         if abs(s[0] - s[2]) + abs(s[1] - s[3]) > 1e-6])      # noded: T-junctions split
+    gx0, gy0, gx1, gy1 = lines.bounds
+    from collections import Counter, defaultdict
+    deg = Counter()
+    for g in getattr(lines, "geoms", [lines]):
+        c = list(g.coords)
+        deg[(round(c[0][0], 1), round(c[0][1], 1))] += 1
+        deg[(round(c[-1][0], 1), round(c[-1][1], 1))] += 1
+    ends = defaultdict(list)                         # an opening cut through the wall leaves its sides open: the
+    for (px, py), n in deg.items():                  # loose ends on one line across the wall are joined
+        if n == 1:
+            ends[round(px) if gx1 - gx0 >= gy1 - gy0 else round(py)].append((px, py))
+    extra = []
+    for pts in ends.values():
+        pts.sort(key=lambda q: q[1] if gx1 - gx0 >= gy1 - gy0 else q[0])
+        extra += [LineString([a, b]) for a, b in zip(pts, pts[1:])]
+    if extra:
+        lines = unary_union([lines] + extra)
+    polys = list(polygonize(lines))
+    if not polys:
+        return None
+    P = unary_union(polys)
+    x0, y0, x1, y1 = P.bounds
+    if (x1 - x0) * (y1 - y0) <= 0 or P.area >= fill * (x1 - x0) * (y1 - y0):
+        return None
+    along_x = (x1 - x0) >= (y1 - y0)                 # strips run along the wall
+    a_lv = sorted(set(round(v) for s in segs for v in ((s[0], s[2]) if along_x else (s[1], s[3]))))
+    c_lv = sorted(set(round(v) for s in segs for v in ((s[1], s[3]) if along_x else (s[0], s[2]))))
+    Pb = P.buffer(0.5)
+    strips = []
+    for ca, cb in zip(c_lv, c_lv[1:]):
+        cm, ivs, cur = (ca + cb) / 2.0, [], None
+        for aa, ab in zip(a_lv, a_lv[1:]):
+            am = (aa + ab) / 2.0
+            if Pb.contains(Point(am, cm) if along_x else Point(cm, am)):
+                if cur is not None and cur[1] == aa:
+                    cur[1] = ab
+                else:
+                    cur = [aa, ab]
+                    ivs.append(cur)
+            else:
+                cur = None
+        if ivs:
+            strips.append([ca, cb, [tuple(v) for v in ivs]])
+    merged = []
+    for st in strips:
+        if merged and merged[-1][2] == st[2] and merged[-1][1] == st[0]:
+            merged[-1][1] = st[1]
+        else:
+            merged.append(list(st))
+    if len(merged) < 2:
+        return None
+    rects = []
+    for ca, cb, ivs in merged:
+        for a, b in ivs:
+            rects.append([a, ca, b, cb] if along_x else [ca, a, cb, b])
+    return rects
+
+
 def scene_objects(rows):
-    """Inventory rows (mm) -> objects for scene_draft: plan rect, z range, flat primitive flag."""
+    """Inventory rows (mm) -> objects for scene_draft: plan rect, z range, flat primitive flag. A wall object whose
+    cut is several rectangles (plan_parts) gives one object per rectangle, under its own name (L-112)."""
     out = []
     for r in rows:
         if r["class"] in SKIP_CLASSES:
+            continue
+        if r.get("plan_parts") and r.get("bbox"):
+            z0, z1 = r["bbox"][0][2], r["bbox"][1][2]
+            for q in r["plan_parts"]:
+                out.append(dict(name=r.get("name") or "", parent=r.get("parent"), cls=r["class"], nverts=r.get("nverts"),
+                                rect=tuple(q), z0=z0, z1=z1, flat=False, mods=r.get("mods") or [], part=True))
             continue
         if r.get("bbox"):
             (x0, y0, z0), (x1, y1, z1) = r["bbox"]

@@ -86,10 +86,15 @@ def draw_elevation(sp, P, e, k=25, occ=None):
                            rgb=(80, 80, 80))
     for it in e.get("items", []):
         if it.get("type") == "poly":                 # a piece of furniture: its front view outline from the model
-            pts = [tuple(p) for p in it["pts"]]
-            S.fill(sp, pts, tuple(it.get("rgb", (226, 220, 210))), "SD_Мебель")
-            S.poly(sp, pts, "SD_Мебель", True, (70, 66, 62), 25)
-            g = Polygon(pts).buffer(0)
+            g = Polygon([tuple(p) for p in it["pts"]]).buffer(0).intersection(box(0, -1e5, L, 1e5))
+            if g.is_empty:                           # (a piece running past the end of the wall is cut there, L-112)
+                continue
+            for part in getattr(g, "geoms", [g]):
+                if part.geom_type != "Polygon" or part.area < 1.0:
+                    continue
+                pts = [tuple(p) for p in part.exterior.coords][:-1]
+                S.fill(sp, pts, tuple(it.get("rgb", (226, 220, 210))), "SD_Мебель")
+                S.poly(sp, pts, "SD_Мебель", True, (70, 66, 62), 25)
             if it.get("label") and not g.is_empty:
                 c = g.representative_point()
                 place_text(sp, occ, it["label"], [(c.x, c.y), (c.x, c.y + 150), (c.x, c.y - 150)], 2.2 * k, bold=True,
