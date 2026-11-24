@@ -207,7 +207,7 @@ def general(A, no, title, scale):
     for r in P.rooms:
         fl = P.floor_of_room(r["name"])
         rr.append([r["num"], r["name"], fmt_area(r["area"]), ("%.2f" % r["perimeter"]).replace(".", ","),
-                   (fl or {}).get("id", "-"), r.get("ceiling_type", "Т1")])
+                   (fl or {}).get("id", "-"), r.get("ceiling_type", "ПО-1")])
         tot += r["area"]                     # the column must add up (lesson L-025)
     yb2 = S.table(psp, 214, 256, [10, 70, 26, 26, 30, 36], ["№", "Наименование", "Площадь, м²", "Периметр, м", "Тип пола", "Тип потолка"],
                   rr, h=1.8, aligns=["C", "L", "C", "C", "C", "C"], title="Экспликация помещений", head_h=6.5,

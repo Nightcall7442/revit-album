@@ -342,16 +342,16 @@ def _ceilings_from_model(d, base_dir, log, public):
     types, by = [], {}
     opens = [n for n, (k, z) in per.items() if k == "open"]
     if opens:
-        types.append(dict(id="Т1", short="открытый потолок, окраска, низ плиты %s" % lv(slab), level=slab,
+        types.append(dict(id="ПО-1", short="открытый потолок, окраска, низ плиты %s" % lv(slab), level=slab,
                           desc="Открытый потолок: ж/б плита, балки и инженерные сети окрашиваются (цвет - по дизайну, "
                                "в модели тёмный); воздуховоды и кабельные лотки - открытая прокладка", proposed=True))
         for n in opens:
-            by[n] = ("Т1", slab)
+            by[n] = ("ПО-1", slab)
     susp = sorted({z for n, (k, z) in per.items() if k == "susp"})
     for z in susp:
         names = [n for n, (k, zz) in per.items() if k == "susp" and zz == z]
         wet = all(P.room_by_name[n].get("cls") == "wet" for n in names)
-        tid = "Т%d" % (len(types) + 1)
+        tid = "ПО-%d" % (len(types) + 1)
         types.append(dict(id=tid, short="подвесной потолок %s, %s" % ("ГКЛВ" if wet else "ГКЛ", lv(z)), level=z,
                           desc="%s 12,5 мм по металлокаркасу (ПП 60×27), шпатлёвка, %sокраска; люк ревизии у вентилятора" % (
                               "ГКЛВ" if wet else "ГКЛ", "влагостойкая " if wet else ""), proposed=True))
@@ -365,12 +365,12 @@ def _ceilings_from_model(d, base_dir, log, public):
     for rect, z in beams:
         g = box(*rect)
         for r in P.rooms:
-            if by.get(r["name"], ("", 0))[0] != "Т1":
+            if by.get(r["name"], ("", 0))[0] != "ПО-1":
                 continue
             part = g.intersection(r["shp"])
             if part.area < 0.05e6 or part.geom_type != "Polygon":
                 continue
-            zones.append(dict(type="Т1", kind="beam", name="Балка ж/б (по модели), низ %s" % lv(z),
+            zones.append(dict(type="ПО-1", kind="beam", name="Балка ж/б (по модели), низ %s" % lv(z),
                               poly=_snap_poly(list(part.simplify(2).exterior.coords)[:-1]), bottom=z, proposed=True))
             nb += 1
     d["ceilings"]["types"] = types
@@ -394,7 +394,7 @@ def _ceilings_from_model(d, base_dir, log, public):
         r = P.room_of_point(((x0 + x1) / 2.0, (y0 + y1) / 2.0), 200)
         if r is None:
             continue
-        zones.append(dict(type=by.get(r["name"], ("Т1", 0))[0], kind="rail", name="Карниз потолочный для штор",
+        zones.append(dict(type=by.get(r["name"], ("ПО-1", 0))[0], kind="rail", name="Карниз потолочный для штор",
                           poly=_snap_poly(pts), proposed=True))
         rails += 1
     if rails:

@@ -6,6 +6,7 @@ from shapely.geometry import Polygon, box, LineString, Point, MultiPoint
 from shapely.ops import unary_union
 
 from . import gfx as S
+from . import marks as MK
 from . import symbols as Y
 from . import dims as DM
 from .album import Column, BRONZE
@@ -633,18 +634,60 @@ def box_sheathing(P, b):
     return a / 1e6
 
 
-def _mark_box(A, sp, occ, s, p, rgb):
+def _mark_box(A, sp, occ, s, p, rgb, anchor=None, rounded=True, inside=None):
+    """A finish mark in a rounded frame at p (or the nearest free place, within `inside` when given); moved off its
+    place it gets a leader with a dot to the anchor (what it marks)."""
     k = A.plan_k
     h = 2.0 * k
     w = S.tw(s, h, True) + 1.6 * k
     hh = h + 1.4 * k
-    cands = [p] + ring_candidates(p, [d * k for d in (4, 6, 9, 13)], 16)
-    for c in cands:
-        g = box(c[0] - w / 2, c[1] - hh / 2, c[0] + w / 2, c[1] + hh / 2)
-        if occ.free(g, ignore=("wall",)) and occ.overlap(g) < 0.35 * g.area:
+    cands = [p] + ring_candidates(p, [d * k for d in (2, 3, 4, 6, 9, 13)], 16)
+    best = None
+    for c_ in cands:
+        g_ = box(c_[0] - w / 2, c_[1] - hh / 2, c_[0] + w / 2, c_[1] + hh / 2)
+        sc_ = occ.overlap(g_) + Point(c_).distance(Point(p)) * 1e-3
+        if inside is not None and not inside.contains(g_):
+            sc_ += 1e6
+        elif inside is None and not occ.free(g_, ignore=("wall",)):
+            sc_ += 1e5
+        if best is None or sc_ < best[0]:
+            best = (sc_, c_, g_)
+        if sc_ < 1.0:
             break
-    occ.defer(lambda: Y.tag_box(sp, s, c, k, h=2.0, txt_rgb=rgb, border=rgb, bold=True))
+    _, c, g = best
+    anchor = anchor or p
+    moved = Point(c).distance(Point(anchor)) > 0.5 * max(w, hh)
+    if moved:
+        edge = g.exterior.interpolate(g.exterior.project(Point(anchor)))
+        occ.add(LineString([(edge.x, edge.y), anchor]).buffer(0.3 * k), "leader")
+    occ.defer(lambda: (Y.leader(sp, (edge.x, edge.y), anchor, k) if moved else None,
+                       Y.tag_box(sp, s, c, k, h=2.0, txt_rgb=(20, 20, 20), border=(40, 40, 40), rounded=rounded)))
     occ.add(g.buffer(0.3 * k), "tag")
+
+
+def _room_wall_marks(A, sp, occ, rm, typ, mask, segs=(), min_len=1200.0):
+    """Marks of the room's wall finish on its walls: one per wall run at least min_len long, inside the room at the
+    middle of the run, a leader to the wall."""
+    k = A.plan_k
+    inner = rm["shp"].buffer(-sc(A, 70), join_style=2)
+    if inner.is_empty or inner.geom_type != "Polygon":
+        return
+    rest = inner.exterior.difference(mask)
+    for g in (rest.geoms if hasattr(rest, "geoms") else [rest]):
+        cs = list(g.coords)
+        for a, b in zip(cs[:-1], cs[1:]):
+            ln = LineString([a, b])
+            if ln.length < min_len:
+                continue
+            m = ln.interpolate(0.5, normalized=True)
+            if any(LineString([sg["a"], sg["b"]]).distance(m) < sc(A, 250) for sg in segs):
+                continue                         # the wall has its own finish: its segment carries the mark
+            dx, dy = (b[0] - a[0]) / ln.length, (b[1] - a[1]) / ln.length
+            nx, ny = -dy, dx
+            if not rm["shp"].contains(Point(m.x + nx * 50, m.y + ny * 50)):
+                nx, ny = -nx, -ny
+            _mark_box(A, sp, occ, typ, (m.x + nx * 4.0 * k, m.y + ny * 4.0 * k), None, anchor=(m.x, m.y),
+                      inside=rm["shp"].buffer(-sc(A, 120)))
 
 
 # ------------------------------------------------------------------ 06 furniture
@@ -957,7 +1000,7 @@ def ceilings(A, no, title, scale):
     k = A.plan_k
     psp, sp, occ = A.plan_sheet(no, title, scale, "Подвесные потолки, короба, ниши. Отметки - от чистого пола до низа потолка")
     C = P.ceilings
-    types = C.get("types", [{"id": "Т1", "desc": "Потолок ГКЛ, окраска", "level": P.ceiling}])
+    types = C.get("types", [{"id": "ПО-1", "desc": "Потолок ГКЛ, окраска", "level": P.ceiling}])
     tcol = {t["id"]: C_T[i % len(C_T)] for i, t in enumerate(types)}
     zones = C.get("zones", [])
     OVER = ("cove", "beam", "rail")            # drawn over the ceiling, not a ceiling surface of their own
@@ -1643,7 +1686,7 @@ def finishes(A, no, title, scale):
     reg_walls(A, occ)
     reg_swings(A, occ)
     F = P.finishes
-    types = F.get("types", [{"id": "О1", "desc": "Окраска"}])
+    types = F.get("types", [{"id": "КР-1", "desc": "Окраска"}])
     frgb = {t["id"]: tuple(t.get("rgb", FIN_RGB_DEFAULT[i % len(FIN_RGB_DEFAULT)])) for i, t in enumerate(types)}
     mask = unary_union([LineString(sl).buffer(sc(A, 160), cap_style=2) for sl in P.separations]
                        + [g.buffer(sc(A, 110), join_style=2) for g in getattr(P, "passages", [])]
@@ -1659,6 +1702,9 @@ def finishes(A, no, title, scale):
             for a, b in zip(cs[:-1], cs[1:]):
                 S.line(sp, a, b, "SD_Акцент", frgb.get(typ, (150, 150, 150)), 70)
         occ.add(inner.exterior.buffer(0.9 * k), "strip")
+    for rm in P.rooms:
+        _room_wall_marks(A, sp, occ, rm, rm.get("wall_finish") or F.get("by_class", {}).get(rm.get("cls"), types[0]["id"]), mask,
+                         F.get("segments", []))
     for seg in F.get("segments", []):
         S.line(sp, seg["a"], seg["b"], "SD_Акцент", frgb.get(seg["type"], (150, 150, 150)), 100)
         occ.add(LineString([seg["a"], seg["b"]]).buffer(1.0 * k), "strip")
@@ -1700,7 +1746,7 @@ def finishes(A, no, title, scale):
         for t, v in split.items():
             tot_w[t] = tot_w.get(t, 0.0) + round(v, 2)
         fl = P.floor_of_room(rm["name"])
-        rows.append([rm["num"], rm["name"], "%s %s" % (rm.get("ceiling_type", "Т1"), fmt_area(rm["area"])), ws,
+        rows.append([rm["num"], rm["name"], "%s %s" % (rm.get("ceiling_type", "ПО-1"), fmt_area(rm["area"])), ws,
                      "%s %s" % ((fl or {}).get("id", "-"), fmt_area(rm["area"]))])
         tot_c += rm["area"]
         tot_f += rm["area"]
@@ -1719,7 +1765,7 @@ def room_wall_finishes(P):
     the kitchen elevation zones (default 650) and are subtracted from the base finish."""
     from .sheets_details import elev_material_areas, groups
     F = P.finishes
-    types = F.get("types", [{"id": "О1", "desc": "Окраска"}])
+    types = F.get("types", [{"id": "КР-1", "desc": "Окраска"}])
     paint_t = types[0]["id"]
     by_room = {}
     for g in groups(P):
@@ -1737,7 +1783,8 @@ def room_wall_finishes(P):
             if wall_len >= 0.9 * per:
                 split = {}
                 if mats["tile"] > 0:
-                    split[typ if typ != paint_t else "О2"] = mats["tile"]
+                    tile_t = next((t["id"] for t in F.get("types", []) if MK.is_tile(t)), "ПЛ-1")
+                    split[typ if typ != paint_t else tile_t] = mats["tile"]
                 if mats["paint"] > 0:
                     split[paint_t] = split.get(paint_t, 0.0) + mats["paint"]
         if split is None:

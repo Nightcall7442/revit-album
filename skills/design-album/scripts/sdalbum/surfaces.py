@@ -21,6 +21,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from . import model as M
+from . import marks as MK
 from . import topo as T
 
 BOX_NAME = {"install": "Короб для инсталляции подвесного унитаза",
@@ -401,12 +402,12 @@ def _floors(d, base_dir, log):
         rooms = groups.get(key)
         if not rooms:
             continue
-        out.append(dict(id="П%d" % (len(out) + 1), material="%s %s%s" % (mat, "×".join(map(str, tile)), (", " + cls_txt) if cls_txt else ""),
+        out.append(dict(id=MK.floor_id(out, mat, "tile"), material="%s %s%s" % (mat, "×".join(map(str, tile)), (", " + cls_txt) if cls_txt else ""),
                         pattern="tile", tile=tile, rooms=[r["name"] for r in rooms], layers=layers, reserve=0.1,
                         proposed=True, source="model", src=base["name"]))
     for r in other:                               # not under the model's floor: by its use
         wet = r.get("cls") == "wet"
-        out.append(dict(id="П%d" % (len(out) + 1), material="Керамогранит 600×600%s" % (", R10" if public else ""), pattern="tile",
+        out.append(dict(id=MK.floor_id(out, "керамогранит", "tile"), material="Керамогранит 600×600%s" % (", R10" if public else ""), pattern="tile",
                         tile=[600, 600], rooms=[r["name"]], reserve=0.1, proposed=True,
                         layers="Керамогранит 10 мм; плиточный клей; %sстяжка" % ("обмазочная гидроизоляция с заведением на стены 200 мм; " if wet else "")))
     zones = []
@@ -421,13 +422,13 @@ def _floors(d, base_dir, log):
         t = z.get("tile") or z.get("tile_name")
         if not t:                                 # the model does not say the format: never invent one (L-104)
             lbl = z.get("label") or ("" if _generic(z.get("material")) else z.get("material"))
-            out.append(dict(id="П%d" % (len(out) + 1), pattern="model", polys=z["polys"], reserve=0.1, proposed=True,
+            out.append(dict(id=MK.floor_id(out, z.get("material") or "", "model"), pattern="model", polys=z["polys"], reserve=0.1, proposed=True,
                             material="Покрытие зоны по 3D-модели%s (формат и раскладка - уточнить)" % (" «%s»" % lbl if lbl else ""),
                             source="model", src=z["name"], layers="по образцу дизайнера; уровень - заподлицо с основным покрытием",
                             zone="зона по модели в «%s»" % host["name"]))
             zones.append("%s - зона без формата в модели (%s м²) - уточнить" % (out[-1]["id"], ("%.1f" % z["area"]).replace(".", ",")))
             continue
-        out.append(dict(id="П%d" % (len(out) + 1), material=_mat_label(z, small=True) + " " + "×".join(map(str, t)), pattern="tile",
+        out.append(dict(id=MK.floor_id(out, _mat_label(z, small=True), "tile"), material=_mat_label(z, small=True) + " " + "×".join(map(str, t)), pattern="tile",
                         tile=t, polys=z["polys"], origin=z.get("origin"), reserve=0.15, proposed=True, source="model", src=z["name"],
                         layers="Плитка 8-10 мм; плиточный клей; %sстяжка (уровень - заподлицо с основным покрытием)" % (
                             "обмазочная гидроизоляция; " if wet else ""),
@@ -531,7 +532,7 @@ def _finishes(d, base_dir, log):
             desc += "; на части стен - кирпичная кладка «лофт» по визуализации"
     else:
         desc = WALL_LABEL.get(base, "%s") % ""
-    types = [dict(id="О1", desc=desc, rgb=WALL_RGB.get(base, [205, 205, 210]), source="model", kind=base)]
+    types = [dict(id=MK.wall_id([], desc, base), desc=desc, rgb=WALL_RGB.get(base, [205, 205, 210]), source="model", kind=base)]
     segs = []
     other = {}
     for w in P.walls:
@@ -540,7 +541,7 @@ def _finishes(d, base_dir, log):
             continue
         other.setdefault(v["kind"], []).append(w)
     for kd, ws in other.items():
-        tid = "О%d" % (len(types) + 1)
+        tid = MK.wall_id(types, WALL_LABEL.get(kd, ""), kd)
         types.append(dict(id=tid, desc=WALL_LABEL.get(kd, "%s") % "", rgb=WALL_RGB.get(kd, [150, 150, 150]), source="model", kind=kd))
         for w in ws:
             for rm in P.rooms:
@@ -557,7 +558,7 @@ def _finishes(d, base_dir, log):
     tile_label = None
     if clad or any(w.get("box") == "install" for w in d.get("walls", [])):
         tile_label = "Плитка%s%s" % ((" " + lbl) if lbl else "", (" %d×%d" % tuple(tl)) if tl else "")
-        types.append(dict(id="О%d" % (len(types) + 1), desc="%s - короба, облицовки колонн, основание дивана, стена инсталляции"
+        types.append(dict(id=MK.wall_id(types, "плитка", "tile"), desc="%s - короба, облицовки колонн, основание дивана, стена инсталляции"
                           % tile_label, rgb=WALL_RGB["tile"], source="model", kind="tile", tile=tl or [100, 100]))
     base_label = types[0]["desc"].split(" по модели")[0].split(";")[0]
     d["finishes"] = dict(types=types, by_class={}, segments=segs, source="model", base_label=base_label,

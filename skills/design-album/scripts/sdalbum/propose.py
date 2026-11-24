@@ -31,6 +31,7 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from . import model as M
+from . import marks as MK
 from . import topo as T
 
 SECTIONS = ("floors", "ceilings", "finishes", "plumbing", "lighting", "switches", "sockets", "panel", "circuits", "elevations")
@@ -186,13 +187,13 @@ def _floors(d, P, log):
     out = []
     if by["plank"]:
         along = _plank_direction(P, by["plank"])
-        out.append(dict(id="П1", material="Ламинат 33 класс, планка 1380×193", pattern="plank", plank=[1380, 193], along=along,
+        out.append(dict(id=MK.floor_id(out, "ламинат", "plank"), material="Ламинат 33 класс, планка 1380×193", pattern="plank", plank=[1380, 193], along=along,
                         rooms=by["plank"], layers="Ламинат 8 мм; подложка 3 мм; стяжка", reserve=0.1, proposed=True))
     if by["tile"]:
-        out.append(dict(id="П%d" % (len(out) + 1), material="Керамогранит 600×600", pattern="tile", tile=[600, 600],
+        out.append(dict(id=MK.floor_id(out, "керамогранит", "tile"), material="Керамогранит 600×600", pattern="tile", tile=[600, 600],
                         rooms=by["tile"], layers="Керамогранит 10 мм; плиточный клей; стяжка", reserve=0.1, proposed=True))
     if by["wet"]:
-        out.append(dict(id="П%d" % (len(out) + 1), material="Керамогранит 600×600 (санузлы)", pattern="tile", tile=[600, 600],
+        out.append(dict(id=MK.floor_id(out, "керамогранит", "tile"), material="Керамогранит 600×600 (санузлы)", pattern="tile", tile=[600, 600],
                         rooms=by["wet"], layers="Керамогранит 10 мм; плиточный клей; обмазочная гидроизоляция с заведением на стены 200 мм; стяжка",
                         reserve=0.1, proposed=True))
     d["floors"] = out
@@ -218,7 +219,7 @@ def _floors_public(d, P, log):
         if not rooms:
             continue
         used.update(rooms)
-        out.append(dict(id="П%d" % (len(out) + 1), material=mat, pattern="tile", tile=tile, rooms=rooms, layers=layers,
+        out.append(dict(id=MK.floor_id(out, mat, "tile"), material=mat, pattern="tile", tile=tile, rooms=rooms, layers=layers,
                         reserve=0.1, proposed=True))
     d["floors"] = out
     _note(d, "floors", "Покрытия - проектное предложение для общественного интерьера: износостойкий керамогранит, "
@@ -242,25 +243,26 @@ def _plank_direction(P, names):
 def _ceilings(d, P, log):
     lvl = P.ceiling
     lt = ("+%.3f" % (lvl / 1000.0)).replace(".", ",")
-    types = [dict(id="Т1", short="потолок ГКЛ, окраска, %s" % lt, desc="ГКЛ 12,5 мм по металлокаркасу, шпатлёвка, окраска", level=lvl,
+    t1, t2 = "ПО-1", "ПО-2"
+    types = [dict(id=t1, short="потолок ГКЛ, окраска, %s" % lt, desc="ГКЛ 12,5 мм по металлокаркасу, шпатлёвка, окраска", level=lvl,
                   proposed=True)]
     wet = [r for r in d["rooms"] if P.room_by_name[r["name"]].get("cls") == "wet"]
     if wet:
-        types.append(dict(id="Т2", short="потолок ГКЛВ, влагостойкая окраска, %s" % lt,
+        types.append(dict(id=t2, short="потолок ГКЛВ, влагостойкая окраска, %s" % lt,
                           desc="ГКЛВ 12,5 мм по металлокаркасу, шпатлёвка, влагостойкая окраска", level=lvl, proposed=True))
     for r in d["rooms"]:
-        r.setdefault("ceiling_type", "Т2" if wet and P.room_by_name[r["name"]].get("cls") == "wet" else "Т1")
+        r.setdefault("ceiling_type", t2 if wet and P.room_by_name[r["name"]].get("cls") == "wet" else t1)
     d.setdefault("ceilings", {})["types"] = types
     d["ceilings"].setdefault("zones", [])
-    L(log, "потолки", "потолки: Т1 ГКЛ%s на отм. %s" % (", Т2 ГКЛВ в санузлах" if wet else "", lt), len(types))
+    L(log, "потолки", "потолки: %s ГКЛ%s на отм. %s" % (t1, (", %s ГКЛВ в санузлах" % t2) if wet else "", lt), len(types))
 
 
 def _finishes(d, P, log):
-    types = [dict(id="О1", desc="Окраска интерьерной матовой краской по подготовленной поверхности", rgb=[205, 205, 210], proposed=True)]
+    types = [dict(id="КР-1", desc="Окраска интерьерной матовой краской по подготовленной поверхности", rgb=[205, 205, 210], proposed=True)]
     by_class = {}
     if any(r.get("cls") == "wet" for r in P.rooms):
-        types.append(dict(id="О2", desc="Керамическая плитка / керамогранит на всю высоту (санузлы)", rgb=[60, 130, 200], proposed=True))
-        by_class["wet"] = "О2"
+        types.append(dict(id="ПЛ-1", desc="Керамическая плитка / керамогранит на всю высоту (санузлы)", rgb=[60, 130, 200], proposed=True))
+        by_class["wet"] = "ПЛ-1"
     if _public(d):
         types[0]["desc"] = "Окраска износостойкой моющейся краской (класс 1-2 по мокрому истиранию), цвет по дизайну"
     segs = []

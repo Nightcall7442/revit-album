@@ -21,6 +21,7 @@
 | `studio`, `stage`, `year`, `country`, `tagline` | | обложка, штамп |
 | `album`, `cover_footer` | | обложка |
 | `letter` (список абзацев), `letter_title`, `signature` | | лист «Обращение к заказчику» |
+| `printed` | `"24.11.2026 20:15"` | дата печати под рамкой (по умолчанию — время сборки) |
 | `logo`, `logo_transparent` | путь к PNG (относительно project.json) | штамп / обложка; по умолчанию логотип Space Design Studio |
 | `code` | `"КВ-2026-АР"` | номер проекта в Revit |
 | `questions` | `["Д-4: подтвердить проём…"]` | «Вопросы к заказчику» на листе «Общие данные» (+ конфликты из проверки данных) |
@@ -64,8 +65,8 @@
 
 ## rooms
 ```json
-{"num": "1", "name": "Прихожая", "seed": [4830, 4900], "cls": "circulation", "ceiling_type": "Т1",
- "ceiling_level": 2800, "wall_finish": "О2", "wall_split": {"О2": 14.57, "О1": 3.91}, "label": "Санузел|совм."}
+{"num": "1", "name": "Прихожая", "seed": [4830, 4900], "cls": "circulation", "ceiling_type": "ПО-1",
+ "ceiling_level": 2800, "wall_finish": "ПЛ-1", "wall_split": {"ПЛ-1": 14.57, "КР-1": 3.91}, "label": "Санузел|совм."}
 ```
 - Контур помещения вычисляется: внутренность здания минус стены, разрезанная `separations`; `seed` — любая точка внутри. Можно задать `poly` вручную.
 - `cls`: `living` | `kitchen` | `wet` | `circulation` (цвет схемы, гидроизоляция, отделка, развёртки санузлов).
@@ -100,19 +101,19 @@ kinds: Р, Р2, РВ (IP44), Р32, ТВ, LAN, КОНД, БРА, ВЫВ. `panel`:
 
 ## floors
 ```json
-{"id": "П1", "material": "Паркетная доска…", "pattern": "plank|tile", "plank": [1300, 160], "along": "y",
+{"id": "НП-1", "material": "Паркетная доска…", "pattern": "plank|tile", "plank": [1300, 160], "along": "y",
  "origin": [200, 200], "tile": [600, 600], "rooms": ["Спальня"], "polys": [[[x,y],…]], "layers": "состав пола",
  "reserve": 0.1}
 ```
 `polys` (необязательно) обрезаются по помещениям и дверным проёмам.
 
 ## ceilings
-`types`: `[{"id": "Т1", "short": "…", "desc": "…", "level": 2800, "kind": "bulkhead", "level_text": "+2,400"}]`;
+`types`: `[{"id": "ПО-1", "short": "…", "desc": "…", "level": 2800, "kind": "bulkhead", "level_text": "+2,400"}]`;
 `zones`: `[{"type": "Т2", "kind": "bulkhead|niche|cove", "name": "…", "poly": [[x,y],…], "bottom": 2400,
 "overhead": true}]` — `overhead` показывает короб пунктиром на планах этажа.
 
 ## finishes
-`types`: `[{"id": "О1", "desc": "…", "rgb": [r,g,b]}]`, `by_class`: `{"wet": "О2"}`,
+`types`: `[{"id": "КР-1", "desc": "…", "rgb": [r,g,b]}]`, `by_class`: `{"wet": "ПЛ-1"}`,
 `segments`: `[{"type": "О3", "a": [x,y], "b": [x,y]}]` — участки (фартук).
 
 ## elevations (развёртки)

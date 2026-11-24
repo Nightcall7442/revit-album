@@ -57,10 +57,15 @@ def mark_circle(sp, s, p, k, r=2.0, h=2.0, fill_rgb=WHITE, rgb=(40, 40, 40), txt
     return Point(p).buffer(r * k + 0.3 * k)
 
 
-def tag_box(sp, s, p, k, h=1.8, rgb=WHITE, txt_rgb=None, border=(80, 80, 80), bold=False, rot=0.0):
+def tag_box(sp, s, p, k, h=1.8, rgb=WHITE, txt_rgb=None, border=(80, 80, 80), bold=False, rot=0.0, rounded=False):
+    """A mark in a frame. rounded - the frame of finish marks (КР, ОБ, ПЛ ...: rounded corners, as on the reference
+    album); square - К, Д, ПО, НП, П."""
     w = S.tw(s, h * k, bold) + 1.6 * k
     hh = h * k + 1.4 * k
     g = box(p[0] - w / 2, p[1] - hh / 2, p[0] + w / 2, p[1] + hh / 2)
+    if rounded:
+        r = 0.45 * hh
+        g = box(p[0] - w / 2 + r, p[1] - hh / 2 + r, p[0] + w / 2 - r, p[1] + hh / 2 - r).buffer(r, 12)
     if rot:
         from shapely import affinity
         g = affinity.rotate(g, rot, origin=p)
@@ -68,6 +73,12 @@ def tag_box(sp, s, p, k, h=1.8, rgb=WHITE, txt_rgb=None, border=(80, 80, 80), bo
     outline(sp, g, border, 13, "SD_Тонкие")
     S.text(sp, s, p, h * k, "MIDDLE_CENTER", rot=rot, bold=bold, rgb=txt_rgb)
     return g
+
+
+def leader(sp, a, b, k, rgb=(60, 60, 60)):
+    """Thin leader from a mark (a) to what it marks (b), a dot at b."""
+    S.line(sp, a, b, "SD_Тонкие", rgb, 13)
+    S.fill(sp, Point(b).buffer(0.45 * k, 12), rgb, "SD_Тонкие")
 
 
 def level_mark(sp, p, s, k, rgb=(40, 40, 40)):
