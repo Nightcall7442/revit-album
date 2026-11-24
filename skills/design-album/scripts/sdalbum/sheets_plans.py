@@ -715,15 +715,26 @@ FLOOR_TINTS = [(234, 232, 226), (222, 233, 243), (241, 232, 214), (226, 238, 226
 FLOOR_ZONE_TINT = (243, 214, 206)              # a zone of other tiles over the base (a strip, a bar zone)
 
 
+FLOOR_TINTS_BY = {"НП": [(241, 232, 214), (236, 222, 200), (245, 238, 224)],   # wood: warm
+                  "ПЛ": [(226, 232, 238), (222, 233, 243), (234, 232, 226)],   # tile / stone: cool grey
+                  "КВ": [(233, 228, 241)], "НС": [(226, 238, 226)]}
+
+
 def floor_tints(P):
-    """Floor type id -> fill colour on the floor plan (a zone with its own outline gets the accent)."""
-    out, i = {}, 0
+    """Floor type id -> fill colour on the floor plan, by the material (wood warm, tile cool); the same colour goes to
+    «УО» of the schedule. A zone laid over a base covering gets the accent."""
+    from . import marks as MK
+    has_base = any(not f.get("polys") for f in P.floors)
+    out, used = {}, {}
     for f in P.floors:
-        if f.get("polys"):
+        if f.get("polys") and has_base:
             out[f["id"]] = FLOOR_ZONE_TINT
-        else:
-            out[f["id"]] = FLOOR_TINTS[i % len(FLOOR_TINTS)]
-            i += 1
+            continue
+        pre = MK.floor_prefix(f.get("material", ""), f.get("pattern"))
+        pal = FLOOR_TINTS_BY.get(pre, FLOOR_TINTS)
+        i = used.get(pre, 0)
+        used[pre] = i + 1
+        out[f["id"]] = pal[i % len(pal)]
     return out
 
 
@@ -955,12 +966,13 @@ def floors(A, no, title, scale):
         txt = f.get("material", "")
         if f.get("layers"):
             txt += ". " + f["layers"]
-        rows.append([f["id"], txt, fmt, where, fmt_area(a), fmt_area(ar), cnt])
+        rows.append([f["id"], S.uo_fill(tints.get(f["id"], Y.TILE if f.get("pattern") == "tile" else Y.PARQUET)),
+                     txt, fmt, where, fmt_area(a), fmt_area(ar), cnt])
     tot = round(tot, 2)
-    col.table([8, 40, 12, 19, 10, 11, 9], ["Тип", "Покрытие и состав пола", "Формат, мм", "Помещения / зона", "Площадь, м²",
-                                          "С запасом, м²", "Плиток, шт."], rows,
-              title="Экспликация полов", h=1.45, aligns=["C", "L", "C", "L", "C", "C", "C"], head_h=6.5,
-              total=["", "Общий итог", "", "", fmt_area(tot), fmt_area(tot_r), "%d" % n_tot if n_tot else ""])
+    col.table([8, 9, 36, 11, 17, 10, 11, 9], ["Марка", "УО", "Покрытие и состав пола", "Формат, мм", "Помещения / зона",
+                                             "Площадь, м²", "С запасом, м²", "Плиток, шт."], rows,
+              title="* Ведомость полов", h=1.45, aligns=["C", "C", "L", "C", "L", "C", "C", "C"], head_h=6.5,
+              total=["", "", "Общий итог", "", "", fmt_area(tot), fmt_area(tot_r), "%d" % n_tot if n_tot else ""])
     extra = []
     rooms_tot = P.total_area()
     on_floor = sum(b["shape"].intersection(unary_union([r["shp"] for r in P.rooms])).area for b in P.boxes
@@ -1138,9 +1150,11 @@ def ceilings(A, no, title, scale):
         a = round(a, 2)
         tot += a
         lv = t.get("level_text") or ("%+.3f" % (t.get("level", P.ceiling) / 1000.0)).replace(".", ",")
-        rows.append([t["id"], t.get("desc", ""), lv, fmt_area(a) if a > 0 else t.get("qty", "-")])
-    col.table([9, 60, 20, 20], ["Тип", "Конструкция и отделка", "Отметка", "Площадь, м²"], rows, title="Ведомость потолков",
-              h=1.55, aligns=["C", "L", "C", "C"], total=["", "Общий итог", "", fmt_area(tot)])
+        rows.append([t["id"], S.uo_fill(tcol[t["id"]], "ANSI31" if t.get("kind") == "bulkhead" else None, (120, 140, 170)),
+                     t.get("desc", ""), lv, fmt_area(a) if a > 0 else t.get("qty", "-")])
+    col.table([9, 10, 51, 19, 20], ["Марка", "УО", "Конструкция и отделка", "Отметка", "Площадь, м²"], rows,
+              title="* Ведомость потолков", h=1.55, aligns=["C", "C", "L", "C", "C"],
+              total=["", "", "Общий итог", "", fmt_area(tot)])
     open_ceiling = any("открыт" in t.get("short", "") for t in types)
     col.notes(A.note_lines("ceilings", [
         "Высота от чистого пола до плиты - %d мм." % P.slab,
@@ -1408,7 +1422,8 @@ def lighting(A, no, title, scale):
     # movable -> bound through the track itself; LED strips carry their own length label.
     for rm in P.rooms:
         for vals, pos, vert in light_bindings(P, rm):
-            DM.chain(sp, vals, pos, pos, k, occ, vertical=vert, merge=20.0)
+            with DM.color(DM.RED):               # electrics: bindings in red (reference album)
+                DM.chain(sp, vals, pos, pos, k, occ, vertical=vert, merge=20.0)
     outer(A, sp, occ, sides=("B", "L"), openings=False)
     col = Column(A, psp)
     kinds = []
@@ -1530,7 +1545,8 @@ def sockets(A, no, title, scale):
         label_near(A, sp, occ, ("%s, низ %+.3f" % (p.get("name", "ЩК"), p.get("bottom", 1500) / 1000.0)).replace(".", ","), (x, y), h=1.8,
                    bold=True, dists=(4, 6, 8, 11))
     # bindings first (they must sit at their wall), then labels, which have room to move and take leaders
-    DM.edge_chains(sp, P, bind, k, occ, offsets=(sc(A, 320), sc(A, 650), sc(A, 950)), exo=3.0)
+    with DM.color(DM.RED):
+        DM.edge_chains(sp, P, bind, k, occ, offsets=(sc(A, 320), sc(A, 650), sc(A, 950)), exo=3.0)
     for c, cen in zip(clusters, centers):
         lab = socket_label(c)
         n = Y.NORMALS[c[0]["wall"]]
@@ -1750,6 +1766,12 @@ def finishes(A, no, title, scale):
                      "%s %s" % ((fl or {}).get("id", "-"), fmt_area(rm["area"]))])
         tot_c += rm["area"]
         tot_f += rm["area"]
+    trows = [[t["id"], S.uo_line(frgb[t["id"]], 70), t.get("desc", ""), fmt_area(tot_w.get(t["id"], 0.0))]
+             for t in types if tot_w.get(t["id"], 0.0) > 0]
+    if trows:
+        col.table([10, 10, 69, 20], ["Марка", "УО", "Наименование", "Площадь, м²"], trows, title="* Ведомость отделки стен",
+                  h=1.55, aligns=["C", "C", "L", "C"],
+                  total=["", "", "Общий итог", fmt_area(sum(tot_w.get(t["id"], 0.0) for t in types))])
     col.table([7, 26, 20, 32, 24], ["№", "Помещение", "Потолок, м²", "Стены, м²", "Пол, м²"], rows,
               title="Ведомость отделки помещений", h=1.55, aligns=["C", "L", "L", "L", "L"],
               total=["", "Общий итог", fmt_area(tot_c), " / ".join("%s %s" % (t, fmt_area(v)) for t, v in tot_w.items()), fmt_area(tot_f)])

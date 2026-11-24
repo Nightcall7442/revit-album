@@ -93,9 +93,9 @@ def new_doc():
         ds.dxf.dimtoh = 0
         ds.dxf.dimdec = 0
         ds.dxf.dimzin = 8
-        ds.dxf.dimclrd = 8
-        ds.dxf.dimclre = 8
-        ds.dxf.dimclrt = 250
+        ds.dxf.dimclrd = 7                    # geometry and overall sizes - black (meaning colours: dims.color)
+        ds.dxf.dimclre = 7
+        ds.dxf.dimclrt = 7
         ds.dxf.dimlwd = 13
         ds.dxf.dimlwe = 13
         ds.dxf.dimtmove = 2
@@ -470,6 +470,8 @@ def fixed_row_height(row_h, h, n):
 
 TABLE_MIN_H = 2.0          # lettering of tables is never smaller than this (the drawings' 2.5 mm reads at 2.0 in a cell)
 TITLE_ROW_H = 6.0          # the name of a table is its first row, above the header (as on the reference album)
+STAR_NOTE = "* Ведомость для оценки объёма работ; количество уточняется по месту."
+STAR_H = 4.5               # a table named «* ...» has the footnote above under it
 HEAD_H = 3.5               # «Условные обозначения:», «Примечание:» - 3.5 mm, underlined
 
 
@@ -480,13 +482,36 @@ def heading(psp, x, y, s, h=HEAD_H):
     return y - h - 3.0
 
 
+def _cell_text(c):
+    return "" if c is None or callable(c) else str(c)
+
+
+def uo_line(rgb, lw=50):
+    """«УО» of a linear item (plinth, cornice, wall finish): a coloured stroke across the cell."""
+    def fn(psp, cx, cy, w, h):
+        line(psp, (cx - w * 0.38, cy), (cx + w * 0.38, cy), "SD_Таблицы", rgb, lw)
+    return fn
+
+
+def uo_fill(rgb, hatch_=None, hatch_rgb=None, outline=(60, 60, 60)):
+    """«УО» of an area item (floor, ceiling): a rectangle with the fill / hatch of the plan."""
+    def fn(psp, cx, cy, w, h):
+        ww, hh = w * 0.38, min(h * 0.32, 2.4)
+        pts = [(cx - ww, cy - hh), (cx + ww, cy - hh), (cx + ww, cy + hh), (cx - ww, cy + hh)]
+        fill(psp, pts, rgb, "SD_Таблицы")
+        if hatch_:
+            hatch(psp, pts, hatch_rgb or outline, hatch_, scale=0.3, layer="SD_Таблицы")
+        poly(psp, pts, "SD_Таблицы", True, outline, 13)
+    return fn
+
+
 def table_height(widths, header, rows, h=2.0, head_h=7.0, title=None, pad=1.2, total=None, row_h=None):
     h = max(h, TABLE_MIN_H)
     head_h = max(head_h, h * 2.6)
-    tot = head_h + (TITLE_ROW_H if title else 0.0)
+    tot = head_h + (TITLE_ROW_H if title else 0.0) + (STAR_H if title and title.startswith("*") else 0.0)
     for ri, r in enumerate(list(rows) + ([total] if total else [])):
         cells = r["cells"] if isinstance(r, dict) else r
-        n = max([wrap_count("" if c is None else str(c), widths[i] - 2 * pad, h) for i, c in enumerate(cells)] + [1])
+        n = max([wrap_count(_cell_text(c), widths[i] - 2 * pad, h) for i, c in enumerate(cells)] + [1])
         tot += fixed_row_height(row_h, h, n) if row_h else row_height(h, n)
     return tot
 
@@ -519,8 +544,7 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
         bold = (isinstance(r, dict) and r.get("bold")) or (total is not None and ri == len(all_rows) - 1)
         lines_needed = 1
         for i, c in enumerate(cells):
-            c = "" if c is None else str(c)
-            lines_needed = max(lines_needed, wrap_count(c, widths[i] - 2 * pad, h, bold))
+            lines_needed = max(lines_needed, wrap_count(_cell_text(c), widths[i] - 2 * pad, h, bold))
         rh = fixed_row_height(row_h, h, lines_needed) if row_h else row_height(h, lines_needed)
         if out_rows is not None:
             out_rows.append((cy, rh))
@@ -529,6 +553,9 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
         elif zebra and ri % 2 == 1:
             fill(psp, [(x, cy), (x + tw, cy), (x + tw, cy - rh), (x, cy - rh)], (247, 247, 248), "SD_Таблицы")
         for i, c in enumerate(cells):
+            if callable(c):                     # a symbol in the cell («УО», sketch)
+                c(psp, (xs[i] + xs[i + 1]) / 2.0, cy - rh / 2.0, widths[i], rh)
+                continue
             c = "" if c is None else str(c)
             if not c:
                 continue
@@ -546,6 +573,10 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
     for xx in xs[1:-1]:
         line(psp, (xx, y), (xx, cy), "SD_Таблицы", rgb=(170, 170, 170))
     line(psp, (x, y - head_h), (x + tw, y - head_h), "SD_Таблицы")
+    if title and title.startswith("*"):         # a schedule to estimate the works: the footnote under it
+        n, hn = _fit_text(STAR_NOTE, 1.8, tw, 1.5)
+        text(psp, n, (x, cy - 1.2), hn, "TOP_LEFT", "SD_Таблицы")
+        cy -= STAR_H
     return cy
 
 

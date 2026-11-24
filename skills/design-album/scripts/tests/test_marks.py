@@ -46,3 +46,33 @@ def test_rounded_mark_frame():
     g = Y.tag_box(d.modelspace(), "КР-1", (0, 0), 1.0, rounded=True)
     sq = Y.tag_box(d.modelspace(), "КР-1", (0, 0), 1.0)
     assert g.area < sq.area and g.bounds[2] - g.bounds[0] == sq.bounds[2] - sq.bounds[0]
+
+
+def test_schedule_cells_take_symbols_and_star_footnote():
+    import ezdxf
+    from sdalbum import gfx as S
+    d = ezdxf.new()
+    psp = d.modelspace()
+    rows = [["КР-1", S.uo_line((200, 0, 0)), "Окраска", "12,03"]]
+    h = S.table_height([10, 10, 50, 15], ["Марка", "УО", "Наименование", "Площадь, м²"], rows, title="* Ведомость отделки стен")
+    bottom = S.table(psp, 0, 0, [10, 10, 50, 15], ["Марка", "УО", "Наименование", "Площадь, м²"], rows,
+                     title="* Ведомость отделки стен")
+    assert abs(-bottom - h) < 0.01
+    texts = [e.dxf.text for e in psp if e.dxftype() == "TEXT"]
+    assert any(t.startswith("* Ведомость для оценки") for t in texts)
+    assert any(e.dxftype() == "LINE" and e.rgb == (200, 0, 0) for e in psp)
+
+
+def test_bindings_of_electrics_are_red():
+    import ezdxf
+    from sdalbum import dims as DM
+    d = ezdxf.new(setup=True)
+    for n in ("SD50",):
+        d.dimstyles.new(n)
+    sp = d.modelspace()
+    with DM.color(DM.RED):
+        DM.chain(sp, [0, 1000, 2500], 500, 0, 50.0)
+    DM.chain(sp, [0, 1000], 900, 0, 50.0)
+    dims = [e for e in sp if e.dxftype() == "DIMENSION"]
+    reds = [e for e in dims if e.override()["dimclrd"] == DM.RED]
+    assert len(reds) == 2 and len(dims) == 3
