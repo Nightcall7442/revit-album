@@ -191,6 +191,8 @@ class Project:
     def outline(self):
         m = self.mass
         g = unary_union([Polygon(x.exterior) for x in m.geoms]) if hasattr(m, "geoms") else Polygon(m.exterior)
+        if hasattr(g, "geoms"):                  # detached parts: the building is the largest one
+            g = max(g.geoms, key=lambda x: x.area)
         return g.simplify(1.0, preserve_topology=True)
 
     def throats(self, max_gap=2600):

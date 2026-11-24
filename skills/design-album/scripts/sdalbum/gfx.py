@@ -189,6 +189,7 @@ def arc(sp, c, r, a0, a1, layer="SD_Тонкие", rgb=None, lw=None, lt=None):
 
 def _paths(h, shp):
     polys = list(shp.geoms) if hasattr(shp, "geoms") else [shp]
+    h.dxf.hatch_style = 0                        # normal (odd parity): islands stay empty in every renderer
     n = 0
     for p in polys:
         if p.is_empty or p.area < 1e-6:

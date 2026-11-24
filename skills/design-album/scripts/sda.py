@@ -50,7 +50,7 @@ sys.path.insert(0, HERE)
 
 
 def cmd_doctor(args):
-    need = ["ezdxf", "shapely", "pymupdf", "matplotlib", "numpy", "PIL", "pytest"]
+    need = ["ezdxf", "shapely", "pymupdf", "matplotlib", "numpy", "PIL", "pytest", "scipy", "contourpy"]
     miss = []
     for m in need:
         try:
@@ -58,7 +58,7 @@ def cmd_doctor(args):
         except Exception:
             miss.append(m)
     if miss:
-        pipn = {"PIL": "pillow"}
+        pipn = {"PIL": "pillow", "pymupdf": "pymupdf"}
         pkgs = [pipn.get(m, m) for m in miss]
         print("installing:", pkgs)
         subprocess.call([sys.executable, "-m", "pip", "install", "-q", "--break-system-packages"] + pkgs)

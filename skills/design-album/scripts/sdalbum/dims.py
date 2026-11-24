@@ -126,6 +126,8 @@ def outline_of(P):
         g = unary_union([Polygon(g.exterior) for g in m.geoms])
     else:
         g = Polygon(m.exterior)
+    if hasattr(g, "geoms"):                      # detached parts: the building is the largest one
+        g = max(g.geoms, key=lambda x: x.area)
     return g.simplify(1.0, preserve_topology=True)
 
 

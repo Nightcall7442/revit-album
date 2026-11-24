@@ -261,6 +261,8 @@ def facades(objects, walls):
         b = box(*o["rect"])
         if any(b.intersection(box(*c["rect"])).area > 0.5 * b.area for c in walls):
             continue
+        if walls and min(b.distance(box(*c["rect"])) for c in walls) > 600:
+            continue                              # detached from the building (a spare copy beside the model)
         out.append(o)
     return out
 
