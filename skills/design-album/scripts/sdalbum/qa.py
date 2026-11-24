@@ -22,7 +22,17 @@ from shapely.strtree import STRtree
 from ezdxf.addons.drawing import Frontend, RenderContext, config as dcfg
 from ezdxf.addons.drawing.backend import BackendInterface
 
-STAMP = (185.0, 5.0, 415.0, 31.0)
+STAMP = (185.0, 5.0, 415.0, 31.0)                # stamp B: the strip along the bottom
+STAMP_A = (325.0, 5.0, 415.0, 51.0)              # stamp A: the foot of the right column (plan sheets)
+
+
+def stamp_box(layout):
+    """Title block region of a sheet: stamp A when the sheet has the column line of the frame layer."""
+    for e in layout.query("LINE[layer=='SD_Рамка']"):
+        a, b = e.dxf.start, e.dxf.end
+        if abs(a.x - b.x) < 0.01 and abs(a.x - STAMP_A[0]) < 0.5:
+            return STAMP_A
+    return STAMP
 FRAME = (20.0, 5.0, 415.0, 292.0)
 
 
@@ -234,7 +244,7 @@ def check_layout(doc, layout, framed=True):
         for code, msg in typo.issues(t["content"]):
             issues.append(dict(code=code, level="error", where=_c(t["bbox"]), msg="«%s»: %s" % (_s(t["content"]), msg)))
     if framed:
-        st = box(*STAMP)
+        st = box(*stamp_box(layout))
         fr = box(*FRAME)
         for t in texts:
             if t["layer"] in ("SD_Штамп",):

@@ -917,7 +917,7 @@ def floors(A, no, title, scale):
     col.table([8, 40, 12, 19, 10, 11, 9], ["Тип", "Покрытие и состав пола", "Формат, мм", "Помещения / зона", "Площадь, м²",
                                           "С запасом, м²", "Плиток, шт."], rows,
               title="Экспликация полов", h=1.45, aligns=["C", "L", "C", "L", "C", "C", "C"], head_h=6.5,
-              total=["", "Итого", "", "", fmt_area(tot), fmt_area(tot_r), "%d" % n_tot if n_tot else ""])
+              total=["", "Общий итог", "", "", fmt_area(tot), fmt_area(tot_r), "%d" % n_tot if n_tot else ""])
     extra = []
     rooms_tot = P.total_area()
     on_floor = sum(b["shape"].intersection(unary_union([r["shp"] for r in P.rooms])).area for b in P.boxes
@@ -1097,7 +1097,7 @@ def ceilings(A, no, title, scale):
         lv = t.get("level_text") or ("%+.3f" % (t.get("level", P.ceiling) / 1000.0)).replace(".", ",")
         rows.append([t["id"], t.get("desc", ""), lv, fmt_area(a) if a > 0 else t.get("qty", "-")])
     col.table([9, 60, 20, 20], ["Тип", "Конструкция и отделка", "Отметка", "Площадь, м²"], rows, title="Ведомость потолков",
-              h=1.55, aligns=["C", "L", "C", "C"], total=["", "Итого", "", fmt_area(tot)])
+              h=1.55, aligns=["C", "L", "C", "C"], total=["", "Общий итог", "", fmt_area(tot)])
     open_ceiling = any("открыт" in t.get("short", "") for t in types)
     col.notes(A.note_lines("ceilings", [
         "Высота от чистого пола до плиты - %d мм." % P.slab,
@@ -1706,7 +1706,7 @@ def finishes(A, no, title, scale):
         tot_f += rm["area"]
     col.table([7, 26, 20, 32, 24], ["№", "Помещение", "Потолок, м²", "Стены, м²", "Пол, м²"], rows,
               title="Ведомость отделки помещений", h=1.55, aligns=["C", "L", "L", "L", "L"],
-              total=["", "Итого", fmt_area(tot_c), " / ".join("%s %s" % (t, fmt_area(v)) for t, v in tot_w.items()), fmt_area(tot_f)])
+              total=["", "Общий итог", fmt_area(tot_c), " / ".join("%s %s" % (t, fmt_area(v)) for t, v in tot_w.items()), fmt_area(tot_f)])
     col.notes(A.note_lines("finishes", [
         "Площади стен - за вычетом проёмов, высота отделки - до потолка; откосы - дополнительно.",
         "Подготовка под окраску: штукатурка, шпаклёвка Q3-Q4, грунт; цвет - по палитре дизайнера.",
