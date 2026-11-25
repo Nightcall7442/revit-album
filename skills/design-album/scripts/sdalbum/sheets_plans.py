@@ -36,6 +36,7 @@ def has_data(A, key):
         "plumbing": bool(P.plumbing),
         "finishes": bool(P.rooms),
         "windows": any(t.get("division") for t in P.opening_types.values()),
+        "elev_key": len(P.elevations) >= 2 and len({e.get("label") for e in P.elevations}) == len(P.elevations),
     }.get(key, True)
 
 
@@ -1838,3 +1839,34 @@ def wall_areas(P):
                 a -= o["w"] / 1000.0 * min(o["h"], P.ceiling) / 1000.0
         out.append((rm, a))
     return out
+
+
+# ------------------------------------------------------------------ plan of the elevations (key)
+def elev_key(A, no, title, scale):
+    """Plan of the elevations: every view of the album with its number at its wall; the list «view - room - sheet»."""
+    from .sheets_details import view_marker
+    P = A.P
+    k = A.plan_k
+    psp, sp, occ = A.plan_sheet(no, title, scale, None)
+    S.fill(sp, unary_union([r["shp"] for r in P.rooms]), (252, 252, 252), "SD_Штриховка")
+    Y.draw_walls(sp, P, k)
+    Y.draw_openings(sp, P, k, door_rgb=(150, 150, 150))
+    reg_walls(A, occ)
+    for e in P.elevations:
+        occ.add(view_marker(sp, P, e, k, r_mm=2.4), "sym")
+    room_tags(A, sp, occ)
+    outer(A, sp, occ, sides=("B", "L"), openings=False)
+    sheet_of = {}
+    for n_, key, t_, sc_, fn_, arg in A.sheets:
+        if key == "elevations" and isinstance(arg, dict):
+            for e in arg.get("elevs", []):
+                sheet_of.setdefault(e.get("label"), n_)
+    rows = [[e.get("label", ""), e.get("room", "") or e.get("group", ""), str(sheet_of.get(e.get("label"), "—"))]
+            for e in P.elevations]
+    col = Column(A, psp)
+    col.table([14, 70, 16], ["Вид", "Помещение", "Лист"], rows, title="Ведомость развёрток", h=1.8, aligns=["C", "L", "C"])
+    col.legend([(lambda p_, cx, cy: (S.fill(p_, Polygon([(cx - 4.6, cy), (cx - 2.2, cy + 1.6), (cx - 2.2, cy - 1.6)]), (30, 30, 30), "SD_Таблицы"),
+                                      S.circle(p_, (cx, cy), 2.4, "SD_Таблицы", (30, 30, 30), 25),
+                                      S.text(p_, "1", (cx, cy), 2.2, "MIDDLE_CENTER", "SD_Таблицы")),
+                 "Номер вида (развёртки); стрелка — направление взгляда на стену")])
+    col.notes(A.note_lines("elev_key", ["Развёртки стен — вид из помещения; номера видов сквозные по альбому."]))

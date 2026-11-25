@@ -520,6 +520,7 @@ def main(path, out, units=None, cut=1100.0, floor=0.0):
     d = _draft(live, os.path.join(out, "draft_project.json"), ceil, slab)
     _surfaces(live, meshes, k, d, out)
     _items(live, meshes, k, d, out)
+    _elev(live, meshes, k, d, out)
     print("units:", u, "(guess from storey %s)" % (round(H, 1) if H else "-") if not units else "")
     print("nodes:", len(rows), " meshes:", len(meshes), " ->", out)
     meshes.clear()                              # the parsed .max (gigabytes) is not needed by the album build
@@ -736,6 +737,22 @@ def _surfaces(rows, meshes, k, d, out):
     d["_floor_src"], d["_box_src"], d["_wall_mats"] = fl, bx, wm
     print("surfaces: покрытий пола %d (%s), коробов %d" % (
         len(fl), ", ".join("%s %s" % (f["material"], "×".join(map(str, f["tile"])) if f["tile"] else "-") for f in fl), len(bx)))
+
+
+def _elev(rows, meshes, k, d, out):
+    """Meshes of the objects at the walls -> import/elev_meshes.npz (the elevations of every wall project them)."""
+    from importers import scene_elev
+    try:
+        pth = scene_elev.save(rows, meshes, k, d, out)
+    except Exception as ex:                  # the album is still built: elevations without the scene objects
+        print("elevations: объекты сцены не сохранены (%r)" % (ex,))
+        return
+    if not pth:
+        return
+    p = os.path.join(out, "draft_project.json")
+    dd = json.load(open(p, encoding="utf-8"))
+    dd.setdefault("meta", {})["elev_meshes"] = os.path.join(os.path.basename(out), os.path.basename(pth))
+    json.dump(dd, open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
 
 def _items(rows, meshes, k, d, out):

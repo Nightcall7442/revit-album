@@ -1433,6 +1433,16 @@ def _elevations(d, P, log):
               len(out) - n0)
     except Exception as ex:                       # the album is built without them, the report says why
         L(log, "развёртки", "развёртки стен зала не построены: %r" % (ex,))
+    try:
+        n0 = len(out)
+        out = _all_walls(d, P, out)
+        if len(out) > n0:
+            L(log, "развёртки", "развёртки всех стен помещений: ещё %d стен (объекты сцены у стен - по 3D-модели)" % (len(out) - n0),
+              len(out) - n0)
+    except Exception as ex:
+        L(log, "развёртки", "развёртки всех стен не построены: %r" % (ex,))
+    for i, e in enumerate(out, 1):                # views numbered through the album (plan of the elevations)
+        e["label"] = str(i)
     if out:
         d["elevations"] = out
         _note(d, "elevations", "Развёртки - проектное предложение: раскладка плитки и высоты приборов уточняются по выбранной "
@@ -1488,6 +1498,58 @@ def _silhouette(m, place, z0, E, px=12.0):
         best = max(best.geoms, key=lambda q: q.area)
     best = best.simplify(8)
     return [[_r(x), _r(max(0.0, y))] for x, y in list(best.exterior.coords)[:-1]]
+
+
+SCENE_ON_FITTED = ("molding", "curtain", "mirror", "light", "art", "radiator", "tv")
+
+
+def _all_walls(d, P, out):
+    """Every wall of every room gets an elevation (the reference album: «развёртки всех стен»), in room order, each
+    with the objects of the 3D scene standing at it (mouldings, panels, cabinets, curtains, wall lights). Walls that
+    already have an elevation (wet rooms, kitchen, feature walls) keep it and get the scene objects not drawn yet."""
+    from . import elev_scene as ES
+    from .sheets_details import Elev
+    if ((d.get("meta") or {}).get("elevations") or "all") != "all":
+        return out
+    have_scene = bool(ES.load(P))
+    for e in out:                                  # elevations made above: + what the scene hangs on them
+        room = P.room_by_name.get(e.get("room"))
+        if room is None or not have_scene:
+            continue
+        E = Elev(P, e)
+        sc = ES.items(P, E, room["shp"], int(e.get("height") or P.ceiling))
+        if e.get("fixtures") or any(it.get("type") not in ("poly", "panel") for it in e.get("items", [])):
+            sc = [it for it in sc if it["cat"] in SCENE_ON_FITTED]
+        else:                                      # the box outlines of the model give way to the real silhouettes
+            e["items"] = [it for it in e.get("items", []) if it.get("type") not in ("poly", "wall_light")]
+        e.setdefault("items", []).extend(sc)
+    done = [(tuple(e["a"]), tuple(e["b"])) for e in out]
+
+    def seen(a, b):
+        return any(math.hypot(a[0] - x[0], a[1] - x[1]) < 60 and math.hypot(b[0] - y[0], b[1] - y[1]) < 60 for x, y in done)
+    F = P.finishes or {}
+    for room in sorted(P.rooms, key=lambda r: int(r["num"]) if str(r.get("num", "")).isdigit() else 999):
+        H = int(room.get("ceiling_level") or P.ceiling)
+        for a, b in _faces_cw(room):
+            if math.hypot(b[0] - a[0], b[1] - a[1]) < 300 or seen(a, b):
+                continue
+            typ = room.get("wall_finish") or F.get("by_class", {}).get(room.get("cls")) or \
+                ((F.get("types") or [{}])[0].get("id"))
+            e = dict(group=room["name"], room=room["name"], a=[_r(a[0]), _r(a[1])], b=[_r(b[0]), _r(b[1])], height=H,
+                     base="paint", zones=[], items=[], fixtures=[], proposed=True, finish=typ)
+            if have_scene:
+                E_ = Elev(P, e)
+                e["items"] = ES.items(P, E_, room["shp"], H)
+                xs, zs = ES.dims_of(e["items"], E_.L, H)
+                if xs:
+                    e["extra_s"] = xs
+                if zs:
+                    e["extra_heights"] = zs
+            out.append(e)
+    # elevations in room order, the walls of a room clockwise from its entrance side as generated
+    order = {r["name"]: i for i, r in enumerate(sorted(P.rooms, key=lambda r: int(r["num"]) if str(r.get("num", "")).isdigit() else 999))}
+    out.sort(key=lambda e: order.get(e.get("room"), 999))
+    return out
 
 
 def _feature_walls(d, P):
