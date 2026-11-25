@@ -935,7 +935,7 @@ def floors(A, no, title, scale):
              for f in P.floors]
     items += [(_lg_line(BRONZE, 70), "Стык покрытий: профиль-порог в створе двери / разделительный профиль зоны")]
     if any(f.get("pattern") == "tile" for f in P.floors):
-        items.append((_lg_sym(lambda p, cx, cy: Y.start_mark(p, (cx, cy), 1.0)), "Начало раскладки плитки"))
+        items.append((_lg_sym(lambda p, cx, cy: Y.start_mark(p, (cx - 2.2, cy - 1.8), 0.85)), "Начало раскладки плитки"))
     if any(f.get("pattern") not in ("tile", "model") for f in P.floors):
         items.append((_lg_sym(lambda p, cx, cy: Y.arrow(p, (cx - 6, cy), (cx + 6, cy), 1.0)), "Направление укладки доски"))
     if P.wet_rooms():

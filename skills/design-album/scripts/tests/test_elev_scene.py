@@ -71,3 +71,23 @@ def test_every_wall_gets_an_elevation_numbered_through(room_project):
     assert len(framed) == 1
     assert {1000, 2200} <= set(framed[0].get("extra_s", []))      # seen from the room: x grows to the right
     assert {900, 2100} <= set(framed[0].get("extra_heights", []))
+
+
+def test_frame_is_a_moulding_with_its_profile_and_mark(room_project):
+    from sdalbum import propose
+    d = json.load(open(room_project[0], encoding="utf-8"))
+    d2, log = propose.propose(d, room_project[1], sections=("elevations",))
+    fr = [it for e in d2["elevations"] for it in e["items"] if it.get("src") == "Frame01"][0]
+    assert fr["cat"] == "molding" and fr["profile"] == 60 and fr["mark"] == "МЛ-1"
+    assert abs(fr["length"] - (2 * (1200 + 1200) + 2 * (1080 + 1080)) / 2000.0) < 0.1
+
+
+def test_layout_start_is_a_red_pair_of_arrows():
+    import ezdxf
+    from sdalbum import gfx as S, symbols as Y
+    d = ezdxf.new()
+    sp = d.modelspace()
+    g = Y.start_mark(sp, (0, 0), 1.0)
+    lines = [e for e in sp if e.dxftype() == "LINE"]
+    assert len(lines) == 2 and all(e.rgb == S.C_RED for e in lines)
+    assert g.bounds[2] > 3.5 and g.bounds[3] > 3.5

@@ -1535,8 +1535,10 @@ def _all_walls(d, P, out):
                 continue
             typ = room.get("wall_finish") or F.get("by_class", {}).get(room.get("cls")) or \
                 ((F.get("types") or [{}])[0].get("id"))
+            L_ = math.hypot(b[0] - a[0], b[1] - a[1])
             e = dict(group=room["name"], room=room["name"], a=[_r(a[0]), _r(a[1])], b=[_r(b[0]), _r(b[1])], height=H,
-                     base="paint", zones=[], items=[], fixtures=[], proposed=True, finish=typ)
+                     base="paint", zones=[dict(s0=0, s1=_r(L_), z0=0, z1=H, mat="paint")], items=[], fixtures=[],
+                     proposed=True, finish=typ)
             if have_scene:
                 E_ = Elev(P, e)
                 e["items"] = ES.items(P, E_, room["shp"], H)
@@ -1546,6 +1548,8 @@ def _all_walls(d, P, out):
                 if zs:
                     e["extra_heights"] = zs
             out.append(e)
+    if have_scene:
+        ES.assign_molding_marks(out)
     # elevations in room order, the walls of a room clockwise from its entrance side as generated
     order = {r["name"]: i for i, r in enumerate(sorted(P.rooms, key=lambda r: int(r["num"]) if str(r.get("num", "")).isdigit() else 999))}
     out.sort(key=lambda e: order.get(e.get("room"), 999))

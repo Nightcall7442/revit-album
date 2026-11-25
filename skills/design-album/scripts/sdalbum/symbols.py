@@ -128,13 +128,21 @@ def arrow(sp, a, b, k, rgb=BRONZE, lw=35, both=True):
     return LineString([a, b]).buffer(1.2 * k)
 
 
-def start_mark(sp, p, k, rgb=BRONZE):
+def start_mark(sp, p, k, rgb=None, dirs=(1, 1)):
+    """«Начало раскладки» of the reference album: a red L-pair of arrows from the point (along the two walls of the
+    corner the layout starts from). dirs - signs of the arrows along x and y."""
+    rgb = rgb or S.C_RED
     x, y = p
-    S.fill(sp, Point(x, y).buffer(1.3 * k, 24), WHITE, "SD_Текст")
-    S.circle(sp, (x, y), 1.3 * k, "SD_Тонкие", rgb, 25)
-    S.fill(sp, [(x, y), (x + 1.3 * k, y), (x + 0.92 * k, y + 0.92 * k), (x, y + 1.3 * k)], rgb, "SD_Текст")
-    S.fill(sp, [(x, y), (x - 1.3 * k, y), (x - 0.92 * k, y - 0.92 * k), (x, y - 1.3 * k)], rgb, "SD_Текст")
-    return Point(x, y).buffer(1.5 * k)
+    L, a = 4.0 * k, 1.1 * k
+    dx, dy = dirs
+    for (ex, ey) in ((x + dx * L, y), (x, y + dy * L)):
+        S.line(sp, (x, y), (ex, ey), "SD_Текст", rgb, 35)
+        ux, uy = (ex - x) / L, (ey - y) / L
+        S.fill(sp, [(ex, ey), (ex - ux * a - uy * a * 0.45, ey - uy * a + ux * a * 0.45),
+                    (ex - ux * a + uy * a * 0.45, ey - uy * a - ux * a * 0.45)], rgb, "SD_Текст")
+    S.fill(sp, Point(x, y).buffer(0.45 * k, 12), rgb, "SD_Текст")
+    return box(min(x, x + dx * L) - 0.6 * k, min(y, y + dy * L) - 0.6 * k, max(x, x + dx * L) + 0.6 * k,
+               max(y, y + dy * L) + 0.6 * k)
 
 
 def callout(sp, p, num, sheet, k, r=2.6):

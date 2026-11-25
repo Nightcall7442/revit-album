@@ -149,7 +149,8 @@ def project(P, E, room_shp, H, depth=DEPTH):
             continue
         sz = np.stack([s, V[:, 2]], axis=1)[tri]
         polys = _raster_polys(sz, (-50.0, E.L + 50.0), (-10.0, H + 10.0))
-        g = unary_union(polys).simplify(3.0, preserve_topology=True) if polys else None
+        # the outline drawn with every triangle grows the area by half a pixel round: back to the true edge
+        g = unary_union(polys).buffer(-PX / 2.0, join_style=2).simplify(3.0, preserve_topology=True) if polys else None
         if g is None or g.is_empty or g.area < 900.0:
             continue
         out.append(dict(name=name, cat=cat, depth=round(dmin), geom=g))
@@ -165,12 +166,47 @@ def items(P, E, room_shp, H, depth=DEPTH):
         for part in getattr(o["geom"], "geoms", [o["geom"]]):
             if part.geom_type != "Polygon" or part.area < 900.0:
                 continue
-            out.append(dict(type="poly", src=o["name"], cat=o["cat"], depth=o["depth"],
-                            pts=[[round(x), round(y)] for x, y in list(part.exterior.coords)[:-1]],
-                            holes=[[[round(x), round(y)] for x, y in list(r.coords)[:-1]] for r in part.interiors
-                                   if Polygon(r).area >= 400.0],
-                            rgb=list(fill), edge=list(edge)))
+            holes = [r for r in part.interiors if Polygon(r).area >= 400.0]
+            it = dict(type="poly", src=o["name"], cat=o["cat"], depth=o["depth"],
+                      pts=[[round(x), round(y)] for x, y in list(part.exterior.coords)[:-1]],
+                      holes=[[[round(x), round(y)] for x, y in list(r.coords)[:-1]] for r in holes],
+                      rgb=list(fill), edge=list(edge))
+            prof = molding_profile(part, holes)
+            if prof:                              # a frame of a narrow profile: a moulding whatever its name
+                it["cat"] = "molding"
+                it["profile"], it["length"] = prof
+                it["rgb"], it["edge"] = list(STYLE["molding"][0]), list(STYLE["molding"][1])
+            out.append(it)
     return out
+
+
+def molding_profile(part, holes):
+    """(profile width mm, length m) of a frame-shaped silhouette (ring of a narrow strip), else None.
+    width = area / mean of the outer and inner perimeters; length - along the middle of the strip."""
+    if len(holes) != 1:
+        return None
+    inner = Polygon(holes[0])
+    per = (part.exterior.length + inner.exterior.length) / 2.0
+    w = part.area / per if per else 0.0
+    if not (15.0 <= w <= 160.0):
+        return None
+    if part.area > 0.5 * Polygon(part.exterior).area:     # a plate with a small cut-out, not a frame
+        return None
+    return int(round(w / 5.0) * 5), round(per / 1000.0, 2)
+
+
+def assign_molding_marks(elevations):
+    """МЛ-1, МЛ-2 ... by profile width through the album (one profile - one mark), on every moulding item."""
+    profs = sorted({it["profile"] for e in elevations for it in e.get("items", []) if it.get("profile")})
+    marks = {}
+    for p in profs:                                       # profiles within 10 mm of each other are one moulding
+        near = [m for q, m in marks.items() if abs(q - p) <= 10]
+        marks[p] = near[0] if near else "МЛ-%d" % (len(set(marks.values())) + 1)
+    for e in elevations:
+        for it in e.get("items", []):
+            if it.get("profile"):
+                it["mark"] = marks[it["profile"]]
+    return marks
 
 
 def dims_of(items_, L, H, max_n=24):
