@@ -10,7 +10,7 @@ def test_contents_by_sections_and_summary_at_the_end(tmp_path):
     keys = [k for _, k, *_ in A.sheets]
     assert keys[1] == "contents" and keys[-1].startswith("summary_")
     titles = [t for _, _, t, *_ in A.sheets]
-    assert "Общие данные. Пояснительная записка" in titles
+    assert "Пояснительная записка" in titles and titles[1] == "Оглавление"
     assert {"Сводная ведомость отделки", "Сводная ведомость дверей", "Сводная ведомость освещения и электрики",
             "Сводная ведомость стекла"} <= set(titles)
     rows = sheet_rows(A)
@@ -24,8 +24,8 @@ def test_contents_by_sections_and_summary_at_the_end(tmp_path):
     assert not [i for v in rep.values() for i in v if i["level"] == "error"]
     txt = [e.dxf.text if e.dxftype() == "TEXT" else e.plain_text() for no in A2.layouts for e in A2.layouts[no]
            if e.dxftype() in ("TEXT", "MTEXT")]
-    assert "Альбом рабочих чертежей" in txt and "Сводные ведомости" in txt
-    assert "* Сводная ведомость отделки стен" in txt and "Пояснительная записка" in txt
+    assert "1. Альбом" in txt and "4. Сводная ведомость" in txt and "Общие указания:" in txt
+    assert "* Сводная ведомость отделки стен" in txt and "Пояснительная записка." in txt
 
 
 def test_summary_of_finishes_adds_up_to_the_sheets(urgench):

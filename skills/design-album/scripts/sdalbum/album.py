@@ -13,30 +13,30 @@ from .placer import Occ
 BRONZE = (168, 132, 82)
 COL_X = 303.0                                # stamp B sheets: right column over the bottom strip
 COL_TOP = 258.0
-COL_BOTTOM = 36.0
+COL_BOTTOM = 5.0 + S.STAMP_B_H + 4.0
 PLAN_AREA = (22.0, 40.0, 300.0, 262.0)
 # stamp A sheets (plans): the right column of 90 mm holds tables, legend, notes and the title block at its foot
-COL_A_X = 415.0 - S.STAMP_A_W + 2.0
-COL_A_W = S.STAMP_A_W - 4.0
-COL_A_TOP = 288.0
-COL_A_BOTTOM = 5.0 + S.STAMP_A_H + 4.0
+COL_A_X = 415.2 - S.STAMP_A_W                 # tables run from line to line of the column (reference album)
+COL_A_W = S.STAMP_A_W
+COL_A_TOP = 292.0
+COL_A_BOTTOM = 5.0 + S.STAMP_A_H + 3.0
 PLAN_AREA_A = (24.0, 9.0, COL_A_X - 6.0, 277.0)   # x0, y0, x1, y1 on the sheet for plan viewports
 SCALES = (50, 75, 100)
 HEALABLE = ("LINE_THROUGH_TEXT", "TEXT_ON_WALL", "TEXT_OVERLAP")
 
 SHEET_TITLES = {
-    "cover": "Обложка", "letter": "Обращение к заказчику", "general": "Общие данные", "measured": "Обмерный план",
+    "cover": "Титульный лист", "letter": "Обращение к заказчику", "general": "Общие данные", "measured": "Обмерный план",
     "partitions": "План монтажа перегородок", "furniture": "План расстановки мебели", "floors": "План полов",
     "ceilings": "План потолков", "lighting": "План освещения. Привязки",
     "lighting_marks": "План освещения. Маркировка", "lighting_schedule": "Ведомость светильников",
     "switches": "План выключателей и групп", "sockets": "План розеток и электровыводов",
     "plumbing": "План сантехники", "finishes": "План отделки стен", "openings": "Ведомость заполнения проёмов",
     "windows": "Окна и витражи", "items": "Мебель индивидуального изготовления",
-    "elev_key": "План обозначения развёрток", "contents": "Ведомость рабочих чертежей", "plinths": "План плинтусов", "heating": "План отопления",
+    "elev_key": "План обозначения развёрток", "contents": "Оглавление", "plinths": "План плинтусов", "heating": "План отопления",
     "cornices": "План карнизов", "furniture_dims": "План мебели с размерами. Ведомость дверей",
     "el_fittings": "Ведомость электрофурнитуры", "el_outputs": "План электровыводов",
 }
-DEFAULT_ORDER = ["cover", "contents", "letter", "general", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
+DEFAULT_ORDER = ["cover", "contents", "general", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
                  "ceilings", "cornices", "furniture", "furniture_dims", "furniture_3d", "lighting_marks", "lighting_schedule",
                  "lighting", "switches", "sockets", "el_fittings", "el_outputs",
                  "plumbing", "elev_key", "elevations", "openings", "windows", "items",
@@ -104,6 +104,19 @@ class Column:
 
     def table(self, widths, header, rows, title=None, h=1.6, aligns=None, total=None, head_h=5.5, zebra=False,
               allow_band=True):
+        """A table in the column; when it does not fit, its lettering goes down to 1.9 mm before it moves on."""
+        keep = S.TABLE_MIN_H
+        try:
+            sc = self.w / float(sum(widths))
+            while S.TABLE_MIN_H > 1.9 + 1e-6 and self.y - S.table_height([w * sc for w in widths], header, rows, h, head_h,
+                                                                           title, total=total) < self.bottom:
+                S.TABLE_MIN_H = round(S.TABLE_MIN_H - 0.1, 2)
+            return self._table(widths, header, rows, title, h, aligns, total, head_h, zebra, allow_band)
+        finally:
+            S.TABLE_MIN_H = keep
+
+    def _table(self, widths, header, rows, title=None, h=1.6, aligns=None, total=None, head_h=5.5, zebra=False,
+               allow_band=True):
         def need_at(wd):
             return S.table_height([w * wd / float(sum(widths)) for w in widths], header, rows, h, head_h, title, total=total)
         sc = self.w / float(sum(widths))
@@ -162,15 +175,19 @@ class Column:
         self._check()
         return True
 
-    def notes(self, lines):
+    def notes(self, lines, title="Примечание:"):
         self.flush()
         if not lines:
             return
 
+        hn = S.NOTE_H                        # a long note in a short column: smaller lettering first (down to 1.8)
+        while hn > 1.8 + 1e-6 and self.y - S.notes_height(lines, self.w - 1, hn) < self.bottom:
+            hn = round(hn - 0.1, 2)
+
         def need_at(wd):                     # the same wrapping S.notes does: the estimate is the drawing
-            return S.notes_height(lines, wd - 1)
+            return S.notes_height(lines, wd - 1, hn)
         self._fit(need_at)
-        m = S.notes(self.psp, self.x, self.y, lines, self.w - 1)
+        m = S.notes(self.psp, self.x, self.y, lines, self.w - 1, h=hn, title=title)
         self.y -= need_at(self.w) + 2.0
         self._check(gap=2.0)
 
@@ -196,6 +213,8 @@ class Album:
         import datetime
         self.info = dict(object=meta.get("object", "Дизайн-проект интерьера"), place=meta.get("place", ""),
                          stage=meta.get("stage", "Дизайн-проект"), date="", studio=meta.get("studio", ""),
+                         project=meta.get("project", ""), client=meta.get("client", ""),
+                         designer=meta.get("designer", ""), designer_contact=meta.get("designer_contact", ""),
                          printed=meta.get("printed") or datetime.datetime.now().strftime("%d.%m.%Y %H:%M"))
         self.cur_kind = "B"
         self._cols = []
@@ -309,8 +328,9 @@ class Album:
             fn, scale = reg[key]
             n += 1
             ttl = SHEET_TITLES[key]
-            if key == "general" and "contents" in self.sheet_keys:
-                ttl = "Общие данные. Пояснительная записка"
+            if key == "general" and "contents" in self.sheet_keys:     # reference album: the explanatory note
+                ttl = "Пояснительная записка"
+                fn = SM.explanatory_sheet
             if key == "sockets" and "el_outputs" in self.sheet_keys and SX.has_data(self, "el_outputs"):
                 ttl = "План розеток"
             self.sheets.append((n, key, ttl, scale, fn, None))

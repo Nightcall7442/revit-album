@@ -20,12 +20,12 @@ def test_3d_sheets_and_reference_cover_build_clean(tmp_path):
     from sdalbum import album, model, qa
     A = album.Album(model.load(URGENCH), str(tmp_path), ["cover", "finishes_3d", "furniture_3d"])
     titles = [t for _, _, t, *_ in A.sheets]
-    assert titles == ["Обложка", "3D-вид отделки стен. Вид 1", "3D-вид отделки стен. Вид 2", "3D-вид мебели. Вид 1",
+    assert titles == ["Титульный лист", "3D-вид отделки стен. Вид 1", "3D-вид отделки стен. Вид 2", "3D-вид мебели. Вид 1",
                       "3D-вид мебели. Вид 2"]
     A.build()
     rep = qa.check_doc(A.doc)
     assert not [i for v in rep.values() for i in v if i["level"] == "error"]
     cover = A.layouts[1]
     txt = [e.dxf.text for e in cover if e.dxftype() == "TEXT"]
-    assert "Проект:" in txt and "Адрес:" in txt and "Заказчик:" not in txt     # empty fields left out
+    assert "Проект" in txt and "Адрес" in txt and "Заказчик" not in txt     # empty fields left out (reference)
     assert any(e.dxftype() == "IMAGE" for e in cover)                       # the axonometry of the flat

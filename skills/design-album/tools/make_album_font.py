@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""Build assets/fonts/osifont-italic.ttf - the lettering of the album (sloped narrow, GOST 2.304 / ISOCPEUR style).
+"""Build assets/fonts/osifont-gost.ttf - the lettering of the album (upright narrow, as GOSTCommon of the reference album).
 
     python3 make_album_font.py <osifont-lgpl3fe.ttf> <out.ttf>
 
 Source: https://github.com/hikikomori82/osifont (LGPL-3 with the font exception). Steps:
   1. glyphs that are placeholder rectangles in the source are rebuilt: Ё / ё from Latin Ë / ë, Э - Є mirrored;
-  2. every glyph is slanted by 15 degrees and narrowed to 0.85, side bearings recomputed;
+  2. every glyph is narrowed to 0.87 (slant SLANT, 0 - upright), side bearings recomputed;
   3. overlapping contours merged (Ø, ø: a ring crossed by a stroke rendered as a solid blot) - needs skia-pathops;
-  4. family renamed «osifont Italic Narrow».
+  4. family renamed «osifont GOST».
 """
 import math
 import sys
@@ -17,7 +17,7 @@ from fontTools.pens.transformPen import TransformPen
 from fontTools.pens.ttGlyphPen import TTGlyphPen
 from fontTools.ttLib import TTFont
 
-SLANT, NARROW = 15.0, 0.85
+SLANT, NARROW = 0.0, 0.87         # upright and narrow, as GOSTCommon of the reference album (measured on its text)
 
 
 def is_placeholder(gs, name):
@@ -155,12 +155,13 @@ def main(src, dst):
     for rec in f["name"].names:
         s = rec.toUnicode()
         if rec.nameID in (1, 3, 4, 16):
-            rec.string = s.replace("osifont", "osifont Italic Narrow")
+            rec.string = s.replace("osifont", "osifont GOST")
         if rec.nameID == 6:
-            rec.string = s.replace("osifont", "osifontItalicNarrow")
+            rec.string = s.replace("osifont", "osifontGOST")
     f["post"].italicAngle = -SLANT
-    f["OS/2"].fsSelection = (f["OS/2"].fsSelection | 1) & ~(1 << 6)
-    f["head"].macStyle |= 2
+    if SLANT:
+        f["OS/2"].fsSelection = (f["OS/2"].fsSelection | 1) & ~(1 << 6)
+        f["head"].macStyle |= 2
     f["hhea"].advanceWidthMax = max(w for w, _ in hmtx.metrics.values())
     f.save(dst)
 

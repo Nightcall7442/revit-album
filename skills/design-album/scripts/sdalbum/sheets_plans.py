@@ -973,8 +973,8 @@ def floors(A, no, title, scale):
         rows.append([f["id"], S.uo_fill(tints.get(f["id"], Y.TILE if f.get("pattern") == "tile" else Y.PARQUET)),
                      txt, fmt, where, fmt_area(a), fmt_area(ar), cnt])
     tot = round(tot, 2)
-    col.table([8, 9, 36, 11, 17, 10, 11, 9], ["Марка", "УО", "Покрытие и состав пола", "Формат, мм", "Помещения / зона",
-                                             "Площадь, м²", "С запасом, м²", "Плиток, шт."], rows,
+    col.table([9, 8, 33, 11, 15, 9, 9, 7], ["Марка", "УО", "Покрытие и состав пола", "Формат", "Помещения",
+                                           "S, м²", "С зап., м²", "Шт."], rows,
               title="* Ведомость полов", h=1.45, aligns=["C", "C", "L", "C", "L", "C", "C", "C"], head_h=6.5,
               total=["", "", "Общий итог", "", "", fmt_area(tot), fmt_area(tot_r), "%d" % n_tot if n_tot else ""])
     extra = []
@@ -1448,6 +1448,8 @@ def lighting(A, no, title, scale, mode="all"):
             kinds.append(f["kind"])
     spec = P.d.get("lighting_spec", {})
     items = []
+    if mode == "switch" and A.sheet_no("lighting_marks") is not None:
+        kinds = []                           # the fixtures are on the marking sheet: here the switches and the lines
     for kd in kinds:
         fx = [f for f in P.lighting if f["kind"] == kd]
         if kd == "led":
@@ -1602,10 +1604,10 @@ def _sockets(A, no, title, scale):
                 far.append((cen[0] + t[0] * sh * L + n[0] * off * k, cen[1] + t[1] * sh * L + n[1] * off * k, 0 if rot else 90))
         rm = P.room_of_point(cen, 200)
         within = rm["shp"].buffer(-0.3 * k) if rm else None
-        res = place_text(sp, occ, lab, [(c_[0], c_[1], rot) for c_ in cands] + far, 1.5 * k, rgb=S.C_RED, mask=True,
+        res = place_text(sp, occ, lab, [(c_[0], c_[1], rot) for c_ in cands] + far, 1.5 * k, rgb=(20, 20, 20), mask=True,
                          within=within)
-        if res:                              # the height in a red frame (reference album)
-            Y.outline(sp, res[1], S.C_RED, 13, "SD_Электрика")
+        if res:                              # the height in a frame, black (reference album: red are the bindings)
+            Y.outline(sp, res[1], (30, 30, 30), 13, "SD_Электрика")
         if res and math.hypot(res[0][0] - cen[0], res[0][1] - cen[1]) > 6.0 * k:
             q = res[1].exterior.interpolate(res[1].exterior.project(Point(cen)))
             S.line(sp, (q.x, q.y), (cen[0] + n[0] * 0.8 * k, cen[1] + n[1] * 0.8 * k), "SD_Тонкие", (90, 90, 90), 9)
@@ -1625,7 +1627,7 @@ def _sockets(A, no, title, scale):
                       {"ЩК": "Щит квартирный", "ЩР": "Щит распределительный", "ЩО": "Щит освещения"}.get(
                           P.panel.get("name", "ЩК"), "Щит %s" % P.panel.get("name", ""))))
     col.legend(items, rh=5.2)
-    if P.circuits:
+    if P.circuits and A.sheet_no("el_fittings") is None:      # else on the schedule of the electrical fittings
         pn = (P.panel or {}).get("name", "ЩК")
         col.table([9, 27, 27, 46], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits,
                   title="Групповые линии (рекомендуемая схема %s)" % pn, h=1.5, aligns=["C", "L", "L", "L"], head_h=5.0)

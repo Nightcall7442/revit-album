@@ -385,7 +385,7 @@ def el_outputs(A, no, title, scale):
 def el_fittings(A, no, title, scale):
     P = A.P
     psp = A.make_sheet(no, title, scale, None, kind="B")
-    col = Column(A, psp, x=24.0, top=272.0, width=300.0, bottom=36.0, spill=[])
+    col = Column(A, psp, x=24.0, top=280.0, width=300.0, bottom=24.0, spill=[])
     rows = []
     kinds = []
     for s_ in P.sockets:
@@ -411,6 +411,10 @@ def el_fittings(A, no, title, scale):
     col.table([14, 78, 12, 40, 156], ["Тип", "Наименование", "Кол.", "Н, мм", "Помещения"], rows,
               title="* Ведомость электрофурнитуры", h=1.8, aligns=["C", "L", "C", "C", "L"],
               total=["", "Общий итог", str(sum(int(r[2]) for r in rows)), "", ""])
+    if P.circuits:                               # the groups of the panel (from the sockets plan)
+        pn = (P.panel or {}).get("name", "ЩК")
+        col.table([14, 60, 60, 166], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits,
+                  title="Групповые линии (рекомендуемая схема %s)" % pn, h=1.8, aligns=["C", "L", "L", "L"])
     col.notes(A.note_lines("el_fittings", [
         "Серия и цвет электрофурнитуры - по выбору дизайнера, единая для всего объекта.",
         "Высоты - от чистого пола до центра изделия; в санузлах - влагозащищённое исполнение IP44.",

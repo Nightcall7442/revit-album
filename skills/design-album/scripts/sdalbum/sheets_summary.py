@@ -13,8 +13,8 @@ from .album import Column
 from .model import fmt_area
 
 fmt_m = lambda v: ("%.2f" % v).replace(".", ",")
-SECTIONS = OrderedDict([("album", "Альбом рабочих чертежей"), ("items", "Мебель индивидуального изготовления"),
-                        ("visuals", "Визуализации"), ("summary", "Сводные ведомости")])
+SECTIONS = OrderedDict([("album", "1. Альбом"), ("items", "2. Мебель инд. изготовления"),
+                        ("visuals", "3. Визуализации"), ("summary", "4. Сводная ведомость")])
 SUMMARY_KEYS = ("summary_finishes", "summary_doors", "summary_electric", "summary_glass")
 
 
@@ -62,27 +62,38 @@ def sheet_rows(A):
     return [(r[0], r[1], r[2], r[3]) for r in out]
 
 
+GENERAL_NOTES = [
+    "Все размеры указаны в миллиметрах.",
+    "Комплект рабочих чертежей разработан на основе обмеров / 3D-модели.",
+    "Перед началом работ все разметки и отметки проверить по месту.",
+    "Несоответствие размеров и отметок согласовать с дизайнером — автором проекта или заказчиком.",
+    "Уровень чистого пола ±0,000 принят за уровень пола прихожей.",
+]
+
+
 def contents(A, no, title, scale):
-    """«Ведомость рабочих чертежей» by sections, in two columns when long."""
-    psp = A.make_sheet(no, title, scale, None, kind="B")
+    """«Оглавление» as on the reference album: «Ведомость рабочих чертежей» (number of the sheet | name) by numbered
+    sections, in two tables side by side; «Общие указания» in the column (stamp A)."""
+    psp = A.make_sheet(no, title, scale, None, header=False, kind="A")
     rows = []
     by = OrderedDict((k, []) for k in SECTIONS)
     for sec, num, name, sc in sheet_rows(A):
-        by[sec].append([num, name, sc])
+        by[sec].append([num.lstrip("0") or "0", name])
     for sec, rs in by.items():
         if not rs:
             continue
-        rows.append(dict(cells=["", SECTIONS[sec], ""], fill=(236, 236, 238)))
+        rows.append(dict(cells=["", SECTIONS[sec]], fill=(255, 255, 255)))
         rows += rs
-    half = int(math.ceil(len(rows) / 2.0)) if len(rows) > 26 else len(rows)
-    parts = [rows[:half], rows[half:]] if half < len(rows) else [rows]
-    x = 24.0
-    for i, part in enumerate(parts):
-        if not part:
-            continue
-        S.table(psp, x, 272.0, [14, 140, 30], ["Лист", "Наименование", "Масштаб"], part, h=1.8,
-                aligns=["C", "L", "C"], title="Ведомость рабочих чертежей" + (" (продолжение)" if i else ""), head_h=6.0)
-        x += 196.0
+    per = 44
+    parts = [rows[i:i + per] for i in range(0, len(rows), per)][:2]
+    x = 38.0
+    for part in parts:
+        S.table(psp, x, 278.0, [24, 110], ["Номер листа", "Имя листа"], part, h=2.3, aligns=["C", "L"],
+                title="Ведомость рабочих чертежей", head_h=5.0)
+        x += 145.0
+    col = Column(A, psp)
+    col.y = 115.0                                  # the general notes low in the column, as on the reference album
+    col.notes(A.note_lines("general_instructions", GENERAL_NOTES), title="Общие указания:")
 
 
 # ------------------------------------------------------------------ summary schedules
@@ -253,6 +264,6 @@ def has_data(A, key):
 def summary_sheet(A, no, title, scale, key):
     """A summary schedule on a stamp B sheet: the tables one under another, on to the right half when long."""
     psp = A.make_sheet(no, title, scale, None, kind="B")
-    col = Column(A, psp, x=24.0, top=272.0, width=188.0, bottom=36.0, spill=[(220.0, 272.0, 190.0, 36.0)])
+    col = Column(A, psp, x=24.0, top=280.0, width=188.0, bottom=24.0, spill=[(222.0, 280.0, 190.0, 24.0)])
     for ttl, widths, header, rows, aligns, total in TABLES[key](A):
         col.table(widths, header, rows, title=ttl, h=1.7, aligns=aligns, total=total, allow_band=False)

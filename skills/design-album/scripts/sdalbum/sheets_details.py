@@ -368,49 +368,69 @@ def elev_scale(E, e, lim, hlim=VIEW_TOP - VIEW_BOTTOM - 12.0):
     return ELEV_SCALES[-1]
 
 
+CAP_W = 22.0                      # the caption «Вид N / 1 : 25» to the right of a view (reference album)
+VIEW_GAP = 6.0
+
+
+def _view_size(E, e, k):
+    w = elev_window(E, e, k)
+    return (w[2] - w[0]) / k, (w[3] - w[1]) / k
+
+
 def elevation_sheets(A):
-    """Sheets of the elevations: a room after a room, its views side by side on stamp A sheets (the key fragment, the
-    schedules, the legend and the notes in the column)."""
+    """Sheets of the elevations, a room after a room: the views in rows (several rows on a sheet, as on the reference
+    album), the caption of a view to its right at its foot; the key fragment, the schedules, the legend and the notes
+    in the column (stamp A)."""
     P = A.P
     out = []
-    lim_all = sheet_w_a()
+    lim_w = sheet_w_a()
+    lim_h = VIEW_TOP - VIEW_BOTTOM
     for g in groups(P):
         room = P.room_by_name.get(g["name"]) or group_room(P, g)
         with_plan = room is not None and g.get("plan", True) and room.get("cls") == "wet"
-        plan_w = _plan_w(room) if with_plan else 0.0
         sized = []
         for e in g["elevs"]:
             E = Elev(P, e)
-            k = elev_scale(E, e, lim_all)
-            w = elev_window(E, e, k)
-            sized.append((e, E, k, (w[2] - w[0]) / k))
-        pages = []
-        cur, used = [], plan_w
-        for e, E, k, w in sized:
-            first_with_plan = with_plan and not pages
-            if used + w + 6 > lim_all:
-                if cur:
-                    pages.append(cur)
-                    cur, used = [], 0.0
-                elif first_with_plan:             # the first wall goes beside the plan: a smaller scale
-                    k = elev_scale(E, e, lim_all - used - 6)
-                    ww = elev_window(E, e, k)
-                    w = (ww[2] - ww[0]) / k
-            cur.append((e, k, w))
-            used += w + 6
-        if cur:
-            pages.append(cur)
-        pages = [pg for pg in pages if pg]
+            k = elev_scale(E, e, lim_w - CAP_W, lim_h - 4.0)
+            w, h = _view_size(E, e, k)
+            sized.append((e, k, w, h))
+        pages, rows, row, used_w, used_h, row_h = [], [], [], 0.0, 0.0, 0.0
+        if with_plan:                                  # the plan of a wet room opens its first row
+            bx0, by0, bx1, by1 = room["shp"].bounds
+            row, used_w, row_h = [("plan", 25, _plan_w(room) - 10.0, (by1 - by0 + 1900.0) / 25.0)], _plan_w(room) + CAP_W, \
+                (by1 - by0 + 1900.0) / 25.0
+        for e, k, w, h in sized:
+            ww = w + CAP_W + VIEW_GAP
+            if row and used_w + ww > lim_w:            # the row is full: the next row below
+                rows.append((row, row_h))
+                used_h += row_h + VIEW_GAP + 4.0
+                row, used_w, row_h = [], 0.0, 0.0
+            if rows and used_h + h > lim_h:            # no room for the row under the others: a new sheet
+                pages.append(rows)
+                rows, used_h = [], 0.0
+            row.append((e, k, w, h))
+            used_w += ww
+            row_h = max(row_h, h)
+        if row:
+            if rows and used_h + row_h > lim_h:
+                pages.append(rows)
+                rows = []
+            rows.append((row, row_h))
+        if rows:
+            pages.append(rows)
         for i, pg in enumerate(pages):
-            labels = [e.get("label", "") for e, _, _ in pg]
+            elevs = [it[0] for r, _ in pg for it in r if it[0] != "plan"]
+            labels = [e.get("label", "") for e in elevs]
+            if not labels:
+                continue
             rng = labels[0] if len(labels) == 1 else ("%s–%s" % (labels[0], labels[-1]) if all(
                 x.isdigit() for x in labels) and int(labels[-1]) - int(labels[0]) == len(labels) - 1 else ", ".join(labels))
-            title = "%s. %s %s %s" % (g["name"], "План, развёртки," if with_plan and i == 0 else "Развёртки,",
+            has_plan = any(it[0] == "plan" for r, _ in pg for it in r)
+            title = "%s. %s %s %s" % (g["name"], "План, развёртки," if has_plan else "Развёртки,",
                                      "вид" if len(labels) == 1 else "виды", rng)
-            ks = [k for _, k, _ in pg]
-            scale = ", ".join("1:%d" % k for k in sorted(set(ks + ([25] if with_plan and i == 0 else []))))
-            out.append((title, scale, elevation_sheet, dict(group=g, elevs=[e for e, _, _ in pg], ks=ks,
-                                                            plan=with_plan and i == 0,
+            ks = [it[1] for r, _ in pg for it in r if it[0] != "plan"]
+            scale = ", ".join("1:%d" % k for k in sorted(set(ks + ([25] if has_plan else []))))
+            out.append((title, scale, elevation_sheet, dict(group=g, elevs=elevs, ks=ks, rows=pg, plan=has_plan,
                                                             last=(i == len(pages) - 1), room=room)))
         if with_plan and g.get("iso", True):           # wet rooms: axonometric views with the tile layout
             out.append(("%s. Аксонометрия" % g["name"], "б/м", iso_sheet, dict(group=g, room=room)))
@@ -455,24 +475,31 @@ def elevation_sheet(A, no, title, scale, arg):
     P = A.P
     ks = arg.get("ks") or [25] * len(arg["elevs"])
     psp = A.make_sheet(no, title, scale, None, header=False, kind="A")    # the views carry their captions
-    x0 = 24.0
-    if arg["plan"]:
-        x0 = bath_plan(A, psp, no, arg["room"]) + 10
-    for i, e in enumerate(arg["elevs"]):
-        k = ks[i]
-        blk, off = A.model_block(no, i + 1)
-        occ = Occ()
-        E = draw_elevation(blk, P, e, k, occ)
-        _finish_mark(A, blk, occ, e, E, k)
-        _molding_marks(blk, occ, e, E, k)
-        win = elev_window(E, e, k)
-        hgt = (win[3] - win[1]) / k
-        y = max(VIEW_BOTTOM, VIEW_TOP - hgt)
-        r = A.vp(psp, off, win, (x0, y), k)
-        S.view_title(psp, (r[0] + r[2]) / 2.0, r[3] + 7.5, "Вид %s" % e.get("label", ""), "1:%d" % k, align="C")
-        x0 = r[2] + 6
+    rows = arg.get("rows") or [([(e, ks[i], 0, 0) for i, e in enumerate(arg["elevs"])], 0)]
+    y_top = VIEW_TOP + 8.0
+    sub = 0
+    for row, row_h in rows:
+        x0 = 24.0
+        for e, k, w, h in row:
+            if e == "plan":
+                x0 = bath_plan(A, psp, no, arg["room"], top=y_top) + CAP_W + VIEW_GAP
+                continue
+            sub += 1
+            blk, off = A.model_block(no, sub)
+            occ = Occ()
+            E = draw_elevation(blk, P, e, k, occ)
+            _finish_mark(A, blk, occ, e, E, k)
+            _molding_marks(blk, occ, e, E, k)
+            win = elev_window(E, e, k)
+            hgt = (win[3] - win[1]) / k
+            r = A.vp(psp, off, win, (x0, max(VIEW_BOTTOM, y_top - hgt)), k)
+            # the caption right of the view, level with the floor line of the elevation (reference album)
+            fy = r[1] + (0.0 - win[1]) / k
+            S.view_title(psp, r[2] + 3.0, fy + 2.0, "Вид %s" % e.get("label", ""), "1:%d" % k, align="L")
+            x0 = r[2] + CAP_W + VIEW_GAP
+        y_top -= row_h + VIEW_GAP + 4.0
     room = arg["room"]
-    col = Column(A, psp)
+    col = Column(A, psp, spill=[])                 # the column never runs onto the views
     _key_fragment(A, psp, no, arg["elevs"], room, col)
     _molding_table(col, arg["elevs"])
     dry = room is not None and room.get("cls") != "wet"
@@ -611,7 +638,7 @@ def _key_fragment(A, psp, no, elevs, room, col):
         near = [r["shp"] for r in P.rooms if any(r["shp"].distance(ln) < 150 for ln in lines)]
         shp = unary_union(near) if near else unary_union([ln.buffer(1500) for ln in lines])
     x0, y0, x1, y1 = shp.bounds
-    w_mm, h_max = col.w, 62.0
+    w_mm, h_max = col.w - 6.0, 44.0
     kk = max((x1 - x0 + 2400) / w_mm, (y1 - y0 + 2400) / h_max, 25.0)
     kk = min([s for s in (25, 50, 75, 100, 150, 200, 250, 300) if s >= kk] or [kk])
     for r in P.rooms:
@@ -621,8 +648,8 @@ def _key_fragment(A, psp, no, elevs, room, col):
         view_marker(blk, P, e, kk, active=True)
     win = (x0 - 1200, y0 - 1200, x1 + 1200, y1 + 1200)
     h = (win[3] - win[1]) / kk
-    S.text(psp, "Фрагмент плана", (col.x, col.y), 2.5, "TOP_LEFT", "SD_Текст")
-    r = A.vp(psp, off, win, (col.x + (w_mm - (win[2] - win[0]) / kk) / 2.0, col.y - 4.0 - h), kk)
+    S.text(psp, "Фрагмент плана", (col.x + 5.0, col.y - 2.0), 2.5, "TOP_LEFT", "SD_Текст")
+    r = A.vp(psp, off, win, (col.x + (col.w - (win[2] - win[0]) / kk) / 2.0, col.y - 6.0 - h), kk)
     col.y = r[1] - 5.0
 
 
@@ -634,8 +661,11 @@ def view_marker(sp, P, e, kk, active=True, r_mm=2.6):
     nx, ny = -uy, ux
     rm = P.room_by_name.get(e.get("room"))
     mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
-    if rm is not None and not rm["shp"].contains(Point(mid[0] + nx * 60, mid[1] + ny * 60)):
-        nx, ny = -nx, -ny
+    if rm is not None:
+        if not rm["shp"].contains(Point(mid[0] + nx * 60, mid[1] + ny * 60)):
+            nx, ny = -nx, -ny
+    elif P.room_of_point((mid[0] + nx * 120, mid[1] + ny * 120), 60) is None:
+        nx, ny = -nx, -ny                       # older data without the room: the side where a room is
     R = r_mm * kk
     c = (mid[0] + nx * (R + 2.2 * kk + 150), mid[1] + ny * (R + 2.2 * kk + 150))
     tip = (c[0] - nx * (R + 2.0 * kk), c[1] - ny * (R + 2.0 * kk))
@@ -735,7 +765,7 @@ def _group_tables(A, col, arg, compact=False, legend=False, tables=True):
     col.notes(notes)
 
 
-def bath_plan(A, psp, no, room):
+def bath_plan(A, psp, no, room, top=254.0):
     """Room plan at 1:25 with wall markers; returns right edge of its viewport on the sheet."""
     P = A.P
     k = 25
@@ -823,8 +853,8 @@ def bath_plan(A, psp, no, room):
     win = (x0 - m, y0 - m, x1 + m, y1 + m)
     w = (win[2] - win[0]) / k
     h = (win[3] - win[1]) / k
-    rr = A.vp(psp, off, win, (24.0, 254.0 - h), k)
-    A.title_note(psp, rr[0], rr[3] + 1.5, "План", "1:25")
+    rr = A.vp(psp, off, win, (24.0, top - h), k)
+    S.view_title(psp, rr[2] + 3.0, rr[1] + 8.0, "План", "1:25", align="L")
     # legend under the plan
     F = P.finishes or {}
     items = [(_lg_fill(WALL_TILE), F.get("tile_label") or "Плитка / керамогранит стен"), (_lg_floor_tile, "Плитка пола"),

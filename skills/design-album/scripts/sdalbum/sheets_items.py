@@ -84,8 +84,8 @@ def pick_scale(size):
     return SCALES[-1]
 
 
-def notes_height(lines, width, h=2.1):
-    return 4.0 + sum(S.wrap_count("%d. %s" % (i + 1, l), width, h) for i, l in enumerate(lines)) * h * 1.667 * 1.3
+def notes_height(lines, width, h=None):
+    return S.notes_height(lines, width, h)           # the same estimate the drawing (gfx.notes) uses
 
 
 def _render(A, it, m, kind, k):
@@ -268,12 +268,13 @@ def item_sheet(A, no, title, scale, arg):
     notes = A.note_lines("item_%s" % it["pos"], it.get("notes") or [])
     if notes:
         need = notes_height(notes, 131)
-        if yb - 9.0 - need >= 36.0:
+        floor_ = 5.0 + S.STAMP_B_H + 3.0           # stamp B: the strip along the whole bottom (reference album)
+        if yb - 9.0 - need >= floor_:
             S.notes(psp, cx0, yb - 9.0, notes, 131)
-        else:                                  # under the views on the left (the title block is on the right)
+        else:                                  # under the views on the left
             low = ty - (11.0 if cols_ else 8.0)
             need2 = notes_height(notes, 154)
-            y_n = low if low - need2 >= 8.0 else 8.0 + need2
+            y_n = low if low - need2 >= floor_ else floor_ + need2
             S.notes(psp, 26.0, y_n, notes, 154)
 
 
@@ -449,5 +450,9 @@ def _side_column(A, psp, it, k, W, D, H, qty, rooms, low):
     yb = S.table(psp, cx0, yb - 11.0, [42, 90], ["Параметр", "Значение"], data, h=1.8, aligns=["L", "L"],
                  title="Характеристики", head_h=5.5)
     notes = A.note_lines("item_%s" % it["pos"], it.get("notes") or [])
-    if notes:
-        S.notes(psp, cx0, yb - 9.0, notes, 131)
+    if notes:                                   # above the stamp B strip: smaller lettering when long (down to 1.6)
+        floor_ = 5.0 + S.STAMP_B_H + 3.0
+        hn = 2.1
+        while hn > 1.6 + 1e-6 and yb - 9.0 - S.notes_height(notes, 131, hn) < floor_:
+            hn = round(hn - 0.1, 2)
+        S.notes(psp, cx0, yb - 9.0, notes, 131, h=hn)

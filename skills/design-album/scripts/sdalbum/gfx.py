@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Graphic system of the album (ezdxf, model mm, A3 sheets in mm).
 
-One lettering for every text: sloped narrow technical font of GOST 2.304 / ISO 3098 (ISOCPEUR style) -
-assets/fonts/osifont-italic.ttf. «bold» keeps the same face (drawings have no bold lettering)."""
+One lettering for every text: upright narrow technical font of GOST 2.304 (as GOSTCommon of the reference album) -
+assets/fonts/osifont-gost.ttf. «bold» keeps the same face (drawings have no bold lettering)."""
 import math
 import os
 import shutil
@@ -11,8 +11,8 @@ from ezdxf import const, colors
 from ezdxf.enums import TextEntityAlignment, MTextEntityAlignment
 from shapely.geometry import Polygon
 
-FONT = "osifont-italic.ttf"
-FONT_B = "osifont-italic.ttf"
+FONT = "osifont-gost.ttf"
+FONT_B = "osifont-gost.ttf"
 ST, STB = "SD", "SD_B"
 A3 = (420.0, 297.0)
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets")
@@ -303,8 +303,8 @@ def chain(sp, values, line_pos, ext_from, style="SD50", vertical=False, small=No
 
 # ---------------------------------------------------------------- sheet furniture
 STAMP_A_W = 90.0          # stamp A: the right column of the sheet (tables, legend, notes, title block)
-STAMP_A_H = 46.0
-STAMP_B_H = 26.0          # stamp B: a strip along the bottom
+STAMP_A_H = 60.0          # reference album: empty cell 15, designer / client 15, project 15, sheet title 15
+STAMP_B_H = 15.0          # stamp B: a strip along the whole bottom (reference album)
 C_LABEL = (110, 110, 110)
 
 
@@ -344,76 +344,78 @@ def _label_value(psp, x, y_top, y_bot, label, value, w, hv=2.5, align="L"):
 
 
 def stamp_a(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info):
-    """Title block at the foot of the right column (stamp A): logo, project, address, sheet title,
-    stage / scale / sheet / sheets."""
+    """Title block at the foot of the right column (stamp A), as on the reference album (mm from the bottom):
+    5-20 sheet title | «Лист» | «Листов»; 20-35 the project; 35-50 «Дизайнер» (name, contact) and «Заказчик»;
+    50-65 an empty cell. The column line runs up to the top of the frame."""
     W, H = A3
-    x1, y0 = W - 5, 5.0
+    x1, y0 = W - 4.8, 5.0
     x0 = x1 - STAMP_A_W
     y1 = y0 + STAMP_A_H
     line(psp, (x0, y0), (x0, H - 5), "SD_Рамка")                # the column
-    rect(psp, x0, y0, x1, y1, "SD_Штамп")
-    rows = [y1, y1 - 11.0, y1 - 20.0, y1 - 27.0, y1 - 37.0, y0]
-    for yy in rows[1:-1]:
-        line(psp, (x0, yy), (x1, yy), "SD_Штамп" if yy in (rows[1], rows[4]) else "SD_Тонкие")
-    if logo_def is not None:                                     # logo row
-        iw, ih = logo_def.dxf.image_size.x, logo_def.dxf.image_size.y
-        hl = 7.0
-        wl = min(40.0, hl * iw / ih)
-        hl = wl * ih / iw
-        img = psp.add_image(logo_def, insert=(x0 + 2.0, rows[1] + (11.0 - hl) / 2.0), size_in_units=(wl, hl),
-                            dxfattribs={"layer": "SD_Штамп"})
-        img.rgb = (254, 254, 254)
-    if info.get("studio") and logo_def is None:
-        s, h = _fit_text(info["studio"], 2.2, STAMP_A_W - 4.0)
-        text(psp, s, (x1 - 2.0, rows[1] + 5.5), h, "MIDDLE_RIGHT", "SD_Штамп")
-    _label_value(psp, x0, rows[1], rows[2], "Проект", info.get("object"), STAMP_A_W)
-    _label_value(psp, x0, rows[2], rows[3], "Адрес", info.get("place"), STAMP_A_W, hv=2.2)
-    t, ht = _fit_text(title, 3.5, STAMP_A_W - 4.0, 2.2)
-    text(psp, "Наименование листа", (x0 + 1.5, rows[3] - 2.2), 1.6, "MIDDLE_LEFT", "SD_Штамп", rgb=C_LABEL)
-    text(psp, t, (x0 + 1.5, (rows[3] - 3.6 + rows[4]) / 2.0), ht, "MIDDLE_LEFT", "SD_Штамп")
-    cw = [30.0, 22.0, 19.0, 19.0]
-    xx = x0
-    for (lab, val), w in zip((("Стадия", info.get("stage", "")), ("Масштаб", scale_label(scale_txt) or "—"),
-                              ("Лист", sheet_no), ("Листов", sheets_total)), cw):
-        if xx > x0:
-            line(psp, (xx, rows[4]), (xx, y0), "SD_Тонкие")
-        _label_value(psp, xx, rows[4], y0, lab, val, w, hv=2.5, align="C")
-        xx += w
+    line(psp, (x0, y1), (x1, y1), "SD_Рамка")
+    for yy in (y0 + 15.0, y0 + 30.0, y0 + 35.0, y0 + 40.0, y0 + 45.0):
+        line(psp, (x0, yy), (x1, yy), "SD_Тонкие")
+    for xx in (x0 + 30.0, x0 + 75.0):                           # designer / client rows: label | value | spare
+        line(psp, (xx, y0 + 30.0), (xx, y0 + 45.0), "SD_Тонкие")
+    xa, xb = x1 - 30.1, x1 - 15.0                                # «Лист», «Листов»
+    line(psp, (xa, y0), (xa, y0 + 15.0), "SD_Тонкие")
+    line(psp, (xb, y0), (xb, y0 + 15.0), "SD_Тонкие")
+    line(psp, (xa, y0 + 10.0), (x1, y0 + 10.0), "SD_Тонкие")
+    text(psp, "Дизайнер", (x0 + 2.1, y0 + 42.5), 2.5, "MIDDLE_LEFT", "SD_Штамп")
+    d_, hd = _fit_text(info.get("designer") or info.get("studio") or "", 2.5, 43.0)
+    text(psp, d_, (x0 + 32.2, y0 + 42.5), hd, "MIDDLE_LEFT", "SD_Штамп")
+    c_, hc = _fit_text(info.get("designer_contact") or "", 2.5, 43.0)
+    text(psp, c_, (x0 + 32.2, y0 + 37.5), hc, "MIDDLE_LEFT", "SD_Штамп")
+    text(psp, "Заказчик", (x0 + 2.1, y0 + 32.5), 2.5, "MIDDLE_LEFT", "SD_Штамп")
+    k_, hk = _fit_text(info.get("client") or "", 2.5, 43.0)
+    text(psp, k_, (x0 + 32.2, y0 + 32.5), hk, "MIDDLE_LEFT", "SD_Штамп")
+    pr, hp = _fit_text(info.get("project") or info.get("object") or "", 3.0, STAMP_A_W - 4.0, 2.0)
+    text(psp, pr, ((x0 + x1) / 2.0, y0 + 22.5), hp, "MIDDLE_CENTER", "SD_Штамп")
+    t, ht = _fit_text(title, 3.0, xa - x0 - 4.0, 1.8)
+    if ht < 2.4 and tw(title, 2.4) > xa - x0 - 4.0:               # a long name: two lines
+        from . import typo
+        words, l1 = typo.fix(title).replace(typo.NBSP, " ").split(" "), ""
+        while words and tw((l1 + " " + words[0]).strip(), 2.4) <= xa - x0 - 4.0:
+            l1 = (l1 + " " + words.pop(0)).strip()
+        l2, h2 = _fit_text(" ".join(words), 2.4, xa - x0 - 4.0, 1.8)
+        text(psp, l1, ((x0 + xa) / 2.0, y0 + 9.6), 2.4, "MIDDLE_CENTER", "SD_Штамп")
+        text(psp, l2, ((x0 + xa) / 2.0, y0 + 5.4), h2, "MIDDLE_CENTER", "SD_Штамп")
+    else:
+        text(psp, t, ((x0 + xa) / 2.0, y0 + 7.5), ht, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Лист", ((xa + xb) / 2.0, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Листов", ((xb + x1) / 2.0, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheet_no), ((xa + xb) / 2.0, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheets_total), ((xb + x1) / 2.0, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
 
 
 def stamp_b(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info):
-    """Title block as a strip along the bottom of the sheet (stamp B): sheets with full-width drawings."""
+    """Title block as a strip along the whole bottom of the frame (stamp B, sheets with full-width drawings), as on the
+    reference album: 20-130 an empty cell | 130-230 the project | 230-315 «Дизайнер» / «Проектировщик» / «Заказчик» |
+    315-385 the sheet title | «Лист» | «Листов»; 15 mm high."""
     W, H = A3
-    x1, y0 = W - 5, 5.0
-    x0, y1 = x1 - 230.0, y0 + STAMP_B_H
-    rect(psp, x0, y0, x1, y1, "SD_Штамп")
-    xa, xb = x0 + 48.0, x1 - 70.0
-    line(psp, (xa, y0), (xa, y1), "SD_Штамп")
-    line(psp, (xb, y0), (xb, y1), "SD_Штамп")
-    line(psp, (xa, y0 + 9.0), (xb, y0 + 9.0), "SD_Тонкие")
-    line(psp, (xa, y0 + 17.5), (xb, y0 + 17.5), "SD_Тонкие")
-    line(psp, (xb, y0 + 13.0), (x1, y0 + 13.0), "SD_Тонкие")
-    if logo_def is not None:
-        iw, ih = logo_def.dxf.image_size.x, logo_def.dxf.image_size.y
-        wl = 40.0
-        hl = min(18.0, wl * ih / iw)
-        wl = hl * iw / ih
-        img = psp.add_image(logo_def, insert=(x0 + (48.0 - wl) / 2.0, y0 + (STAMP_B_H - hl) / 2.0),
-                            size_in_units=(wl, hl), dxfattribs={"layer": "SD_Штамп"})
-        img.rgb = (254, 254, 254)
-    _label_value(psp, xa, y1, y0 + 17.5, "Проект", info.get("object"), xb - xa)
-    _label_value(psp, xa, y0 + 17.5, y0 + 9.0, "Адрес", info.get("place"), xb - xa, hv=2.2)
-    t, ht = _fit_text(title, 3.5, xb - xa - 4.0, 2.2)
-    text(psp, t, (xa + 1.5, y0 + 4.5), ht, "MIDDLE_LEFT", "SD_Штамп")
-    cw = [28.0, 21.0, 21.0]
-    _label_value(psp, xb, y1, y0 + 13.0, "Стадия", info.get("stage", ""), 70.0, align="C")
-    xx = xb
-    for (lab, val), w in zip((("Масштаб", scale_label(scale_txt) or "—"), ("Лист", sheet_no),
-                              ("Листов", sheets_total)), cw):
-        if xx > xb:
-            line(psp, (xx, y0 + 13.0), (xx, y0), "SD_Тонкие")
-        _label_value(psp, xx, y0 + 13.0, y0, lab, val, w, align="C")
-        xx += w
+    x0, x1, y0 = 20.0, W - 4.8, 5.0
+    y1 = y0 + STAMP_B_H
+    line(psp, (x0, y1), (x1, y1), "SD_Рамка")
+    for xx in (130.0, 230.2, 315.2, 385.1, 400.2):
+        line(psp, (xx, y0), (xx, y1), "SD_Тонкие")
+    for xx in (260.1, 300.1):
+        line(psp, (xx, y0), (xx, y1), "SD_Тонкие")
+    for yy in (y0 + 5.0, y0 + 10.0):
+        line(psp, (230.2, yy), (315.2, yy), "SD_Тонкие")
+    line(psp, (385.1, y0 + 10.0), (x1, y0 + 10.0), "SD_Тонкие")
+    pr, hp = _fit_text(info.get("project") or info.get("object") or "", 3.0, 96.0, 2.0)
+    text(psp, pr, (180.1, y0 + 7.5), hp, "MIDDLE_CENTER", "SD_Штамп")
+    for i, (lab, key) in enumerate((("Дизайнер", "designer"), ("Проектировщик", "designer_contact"), ("Заказчик", "client"))):
+        yy = y0 + 12.5 - 5.0 * i
+        text(psp, lab, (232.3, yy), 2.2, "MIDDLE_LEFT", "SD_Штамп")
+        v, hv = _fit_text(info.get(key) or (info.get("studio") if key == "designer" else "") or "", 2.4, 37.0, 1.6)
+        text(psp, v, (261.9, yy), hv, "MIDDLE_LEFT", "SD_Штамп")
+    t, ht = _fit_text(title, 3.0, 66.0, 1.8)
+    text(psp, t, (350.1, y0 + 7.5), ht, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Лист", (392.6, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Листов", (407.7, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheet_no), (392.6, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheets_total), (407.7, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
 
 
 def stamp(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info):
@@ -468,7 +470,7 @@ def fixed_row_height(row_h, h, n):
     return max(row_h, (n - 1) * h * 1.85 + h * 1.35 + 1.2) if n > 1 else row_h
 
 
-TABLE_MIN_H = 2.0          # lettering of tables is never smaller than this (the drawings' 2.5 mm reads at 2.0 in a cell)
+TABLE_MIN_H = 2.3          # lettering of tables is never smaller than this (the drawings' 2.5 mm reads at 2.0 in a cell)
 TITLE_ROW_H = 6.0          # the name of a table is its first row, above the header (as on the reference album)
 STAR_NOTE = "* Ведомость для оценки объёма работ; количество уточняется по месту."
 STAR_H = 4.5               # a table named «* ...» has the footnote above under it
@@ -476,7 +478,9 @@ HEAD_H = 3.5               # «Условные обозначения:», «П�
 
 
 def heading(psp, x, y, s, h=HEAD_H):
-    """A block heading under the top y: the text and a line under it. Returns the y under the heading."""
+    """A block heading under the top y (5 mm in from the column line): the text and a line under it."""
+    x += 5.0
+    y -= 2.0
     text(psp, s, (x, y), h, "TOP_LEFT", "SD_Текст")
     line(psp, (x, y - h - 1.0), (x + tw(s, h), y - h - 1.0), "SD_Текст", lw=18)
     return y - h - 3.0
@@ -581,33 +585,40 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
 
 
 def legend(psp, x, y, items, title="Условные обозначения:", w1=20.0, w2=72.0, rh=6.5):
-    """items: list of (draw_fn(psp, cx, cy) | None, label). Heading «Условные обозначения:» and a two-column table
-    (symbol, meaning) without a header row. Returns bottom y."""
-    rows = []
+    """items: list of (draw_fn(psp, cx, cy) | None, label). The heading «Условные обозначения:» and a list «symbol -
+    meaning» without a grid, as on the reference album. Returns bottom y."""
     if title:
         y = heading(psp, x, y, title if title.endswith(":") else title + ":")
-    cy = table(psp, x, y, [w1, w2], ["Обозначение", "Наименование"], [["", lab] for _, lab in items], h=2.0,
-               row_h=rh, head_h=5.5, out_rows=rows)
-    for (fn, lab), (top, hh) in zip(items, rows):
+    h = 2.3
+    y -= 1.0
+    for fn, lab in items:
+        n = wrap_count(lab, w2 - 2.0, h)
+        hh = max(rh, n * h * 1.6 + 1.6)
+        cy = y - hh / 2.0
         if fn is not None:
-            fn(psp, x + w1 / 2.0, top - hh / 2.0)
-    return cy
+            fn(psp, x + 5.0 + w1 / 2.0, cy)
+        mtext(psp, lab, (x + 5.0 + w1 + 2.0, cy), h, w2 - 6.0, "SD_Таблицы", "MIDDLE_LEFT", 1.1)
+        y -= hh
+    return y
 
 
 NOTE_H = 2.2
 
 
-def notes_height(lines_, width):
-    return HEAD_H + 3.0 + sum(wrap_count("%d. %s" % (i + 1, l), width, NOTE_H) for i, l in enumerate(lines_)) * NOTE_H * 1.667 * 1.3
+def notes_height(lines_, width, h=None):
+    h = h or NOTE_H
+    return HEAD_H + 5.0 + sum(wrap_count("%d. %s" % (i + 1, l), width - 8.0, h) for i, l in enumerate(lines_)) * h * 1.667 * 1.3
 
 
-def notes(psp, x, y, lines_, width=110.0, title="Примечание:"):
+def notes(psp, x, y, lines_, width=110.0, title="Примечание:", h=None):
     """Heading «Примечание:» and numbered notes under the top y, one MTEXT per item (a paragraph break that falls
     on the wrap edge was lost by the renderer: «...разводки.5. Выводы» ran into one line)."""
     yy = heading(psp, x, y, title)
     m = None
+    x, width = x + 5.0, width - 8.0                 # notes 5 mm in from the column line (reference album)
+    h = h or NOTE_H
     for i, l in enumerate(lines_):
         s = "%d. %s" % (i + 1, l)
-        m = mtext(psp, s, (x, yy), NOTE_H, width, "SD_Текст", "TOP_LEFT", 1.3)
-        yy -= wrap_count(s, width, NOTE_H) * NOTE_H * 1.667 * 1.3
+        m = mtext(psp, s, (x, yy), h, width, "SD_Текст", "TOP_LEFT", 1.3)
+        yy -= wrap_count(s, width, h) * h * 1.667 * 1.3
     return m

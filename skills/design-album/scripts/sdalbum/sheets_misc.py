@@ -70,52 +70,47 @@ COVER_FIELDS = (("Проект", "object"), ("Адрес", "place"), ("Зака�
 
 
 def cover_reference(A, no, title, scale):
-    """Title of the reference album: frame, the name of the album at the top, the axonometry of the flat in the
-    middle, the fields «Проект / Адрес / Заказчик / Дизайнер / Проектировщик» bottom left (empty ones left out),
-    the city and the year bottom right, the logo top left."""
+    """Title of the reference album: no frame; the axonometry of the flat on the left; on the right a vertical line and
+    the fields - «Проект» (large) and «Адрес» at the top, «Заказчик» in the middle, «Дизайнер» and «Проектировщик»
+    lower, the city and the year at the foot (empty fields left out)."""
     from . import iso3d
     P = A.P
     m = P.meta
     psp = A.make_sheet(no, title, scale, header=False, stamp=False)
-    S.frame(psp, A.info)
-    if A.logo_def is not None:
-        iw, ih = A.logo_def.dxf.image_size.x, A.logo_def.dxf.image_size.y
-        w = 46.0
-        img = psp.add_image(A.logo_def, insert=(28, 286 - w * ih / iw), size_in_units=(w, w * ih / iw),
-                            dxfattribs={"layer": "SD_Штамп"})
-        img.rgb = (254, 254, 254)
-    lines = m.get("title", "ДИЗАЙН-ПРОЕКТ|ИНТЕРЬЕРА").replace("|", " ")
-    S.text(psp, lines, (217.5, 272.0), 7.0, "MIDDLE_CENTER")
-    S.line(psp, (130, 265.5), (305, 265.5), "SD_Тонкие", (40, 40, 40), 25)
-    S.text(psp, m.get("album", "Альбом рабочих чертежей"), (217.5, 258.0), 3.5, "MIDDLE_CENTER", rgb=(60, 60, 60))
     png = os.path.join(A.out_dir, "cover_3d.png")
     got = None
     try:
-        got = iso3d.render_models(P, png, elev=38.0, azim=-58.0, width=2200) if (P.d.get("items") or P.furniture) \
+        got = iso3d.render_models(P, png, elev=38.0, azim=-58.0, width=2400) if (P.d.get("items") or P.furniture) \
             else iso3d.render(P, png)
     except Exception:
         got = None
     if got and os.path.isfile(png):
         iw, ih = Image.open(png).size
-        bx0, by0, bx1, by1 = 40.0, 62.0, 395.0, 248.0
+        bx0, by0, bx1, by1 = 6.0, 10.0, 300.0, 285.0
         s_ = min((bx1 - bx0) / iw, (by1 - by0) / ih)
         ins = (bx0 + ((bx1 - bx0) - iw * s_) / 2.0, by0 + ((by1 - by0) - ih * s_) / 2.0)
         img = psp.add_image(A.image("cover_3d.png", png), insert=ins, size_in_units=(iw * s_, ih * s_),
                             dxfattribs={"layer": "SD_Мебель"})
         img.rgb = (254, 254, 254)
-    y = 50.0
-    for lab, key in COVER_FIELDS:
-        v = (m.get(key) or "").strip()
-        if not v:
-            continue                                  # empty fields are left out (not «Листов» with nothing)
-        S.text(psp, lab + ":", (28.0, y), 3.0, "MIDDLE_LEFT", rgb=(90, 90, 90))
-        S.text(psp, v, (62.0, y), 3.5, "MIDDLE_LEFT")
-        y -= 8.0
+    xl = 315.0
+    S.line(psp, (xl, 12.0), (xl, 284.0), "SD_Тонкие", (150, 150, 150), 13)
+
+    def field(lab, val, y, hl=3.0, hv=3.0):
+        if not val:
+            return
+        S.text(psp, lab, (xl - 4.0, y), hl, "TOP_RIGHT", "SD_Текст", rgb=(60, 60, 60))
+        S.mtext(psp, val, (xl + 4.0, y), hv, 92.0, "SD_Текст", "TOP_LEFT", 1.2)
+    field("Проект", (m.get("project") or m.get("object") or "").strip(), 258.0, 4.2, 4.2)
+    field("Адрес", (m.get("place") or "").strip(), 247.0)
+    field("Заказчик", (m.get("client") or "").strip(), 105.0)
+    field("Дизайнер", (m.get("designer") or "").strip(), 58.0)
+    field("Проектировщик", (m.get("engineer") or m.get("designer_contact") or "").strip(), 46.0)
     city = (m.get("city") or "").strip()
     year = str(m.get("year") or "").strip()
-    foot = ("%s %s" % (city, year)).strip()
-    if foot:
-        S.text(psp, foot, (410.0, 14.0), 4.0, "MIDDLE_RIGHT")
+    if city:
+        S.text(psp, city, (xl + 4.0, 22.0), 3.0, "TOP_LEFT", "SD_Текст")
+    if year:
+        S.text(psp, year, (xl + 4.0, 16.0), 3.0, "TOP_LEFT", "SD_Текст")
 
 
 def cover_studio(A, no, title, scale):
@@ -259,13 +254,59 @@ def explanatory_items(A):
 
 def explanatory_note(A, psp, x, y, width):
     """«Пояснительная записка» under the top y; returns the bottom y."""
-    yy = S.heading(psp, x, y, "Пояснительная записка")
+    yy = S.heading(psp, x - 5.0, y, "Пояснительная записка")
     for head, txt in explanatory_items(A):
         S.text(psp, head + ":", (x, yy), 2.5, "TOP_LEFT", "SD_Текст")
         yy -= 4.0
         S.mtext(psp, txt, (x, yy), 2.2, width, "SD_Текст", "TOP_LEFT", 1.3)
         yy -= S.wrap_count(txt, width, 2.2) * 2.2 * 1.667 * 1.3 + 3.0
     return yy
+
+
+def explanatory_sheet(A, no, title, scale):
+    """«Пояснительная записка» as on the reference album (stamp B): the text on the left in large lettering, on the
+    right the explication of the rooms by the survey and by the project and a picture (a render of meta.renders or the
+    axonometry); the questions to the client under the text."""
+    P = A.P
+    psp = A.make_sheet(no, title, scale, None, header=False, kind="B")
+    y = 268.0
+    S.text(psp, "Пояснительная записка.", (46.0, y), 3.0, "TOP_LEFT", "SD_Текст")
+    y -= 10.0
+    for head, txt in explanatory_items(A):
+        body = "%s: %s" % (head, txt)
+        S.mtext(psp, body, (46.0, y), 3.0, 190.0, "SD_Текст", "TOP_LEFT", 1.3)
+        y -= S.wrap_count(body, 190.0, 3.0) * 3.0 * 1.667 * 1.3 + 6.0
+    qs = client_questions(A)
+    if qs and y > 60:
+        S.notes(psp, 41.0, y, qs[:8], 196.0, title="Вопросы к заказчику (до начала работ):")
+    tot = P.total_area()
+    parts = sum(g.area for g in P.parts.values()) / 1e6 if P.parts else 0.0
+    yb = S.table(psp, 250.0, 268.0, [12, 50, 16], ["№", "Наименование", "S, м²"], [["0.1", "Помещение", fmt_area(tot + parts)]],
+                 h=2.2, aligns=["C", "L", "R"], title="Экспликация помещений (обмер)", head_h=5.0,
+                 total=["", "Общая площадь", fmt_area(tot + parts)])
+    rr = [[r["num"], r["name"], fmt_area(r["area"])] for r in P.rooms]
+    yb = S.table(psp, 250.0, yb - 10.0, [12, 50, 16], ["№", "Наименование", "S, м²"], rr, h=2.2, aligns=["C", "L", "R"],
+                 title="Экспликация помещений", head_h=5.0, total=["", "Общая площадь", fmt_area(tot)])
+    pic = None
+    rnd = (P.meta.get("renders") or [None])[0]
+    if rnd:
+        pic = rnd if os.path.isabs(rnd) else os.path.join(P.base_dir, rnd)
+        if not os.path.isfile(pic):
+            pic = None
+    if pic is None:
+        from . import iso3d
+        png = os.path.join(A.out_dir, "iso.png")
+        try:
+            pic = png if (iso3d.render_models(P, png) if P.d.get("items") else iso3d.render(P, png)) else None
+        except Exception:
+            pic = None
+    if pic:
+        iw, ih = Image.open(pic).size
+        bw, bh = 80.0, max(30.0, yb - 10.0 - 26.0)
+        s_ = min(bw / iw, bh / ih)
+        img = psp.add_image(A.image(os.path.basename(pic), pic), insert=(250.0 + (bw - iw * s_) / 2.0, yb - 10.0 - ih * s_),
+                            size_in_units=(iw * s_, ih * s_), dxfattribs={"layer": "SD_Мебель"})
+        img.rgb = (254, 254, 254)
 
 
 def general(A, no, title, scale):

@@ -118,7 +118,9 @@ def test_cover_logo_visible(tmp_path):
     from sdalbum.placer import flush_all
     k = 60 / 25.4
     # studio cover: the big logo top left; reference cover: the logo in the top left corner of the frame
-    for style, (y0, y1, x0, x1) in (("studio", (234, 262, 30, 146)), ("reference", (270, 285, 28, 74))):
+    # reference cover: no logo (as on the reference album) - the axonometry of the flat fills the left part
+    for style, (y0, y1, x0, x1), dark, share in (("studio", (234, 262, 30, 146), 90, 0.08),
+                                                ("reference", (60, 250, 40, 280), 235, 0.15)):
         P = model.load(URGENCH)
         P.meta["cover_style"] = style
         out = tmp_path / style
@@ -127,7 +129,7 @@ def test_cover_logo_visible(tmp_path):
         A.render_pdf(str(out / "c.pdf"), str(out / "png"), dpi=60)
         im = np.array(Image.open(out / "png" / "s01.png").convert("L")).astype(float)
         crop = im[int((297 - y1) * k):int((297 - y0) * k), int(x0 * k):int(x1 * k)]
-        assert (crop < 90).mean() > 0.08, "logo not visible on the %s cover" % style
+        assert (crop < dark).mean() > share, "logo / axonometry not visible on the %s cover" % style
 
 
 def test_measured_binds_passage_and_interior_doors(tmp_path):

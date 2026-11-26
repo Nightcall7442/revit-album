@@ -22,15 +22,15 @@ from shapely.strtree import STRtree
 from ezdxf.addons.drawing import Frontend, RenderContext, config as dcfg
 from ezdxf.addons.drawing.backend import BackendInterface
 
-STAMP = (185.0, 5.0, 415.0, 31.0)                # stamp B: the strip along the bottom
-STAMP_A = (325.0, 5.0, 415.0, 51.0)              # stamp A: the foot of the right column (plan sheets)
+STAMP = (20.0, 5.0, 415.0, 20.0)                 # stamp B: the strip along the whole bottom
+STAMP_A = (325.0, 5.0, 415.0, 65.0)              # stamp A: the foot of the right column (plan sheets)
 
 
 def stamp_box(layout):
     """Title block region of a sheet: stamp A when the sheet has the column line of the frame layer."""
     for e in layout.query("LINE[layer=='SD_Рамка']"):
         a, b = e.dxf.start, e.dxf.end
-        if abs(a.x - b.x) < 0.01 and abs(a.x - STAMP_A[0]) < 0.5:
+        if abs(a.x - b.x) < 0.01 and abs(a.x - STAMP_A[0]) < 0.8:
             return STAMP_A
     return STAMP
 FRAME = (20.0, 5.0, 415.0, 292.0)

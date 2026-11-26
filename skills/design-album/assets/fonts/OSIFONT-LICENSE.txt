@@ -1,4 +1,4 @@
-osifont-italic.ttf is derived from osifont-lgpl3fe.ttf (https://github.com/hikikomori82/osifont),
+osifont-gost.ttf is derived from osifont-lgpl3fe.ttf (https://github.com/hikikomori82/osifont),
 an ISO 3098 technical lettering font, licensed under the GNU LGPL version 3 with the GPL font exception:
 
   As a special exception, if you create a document which uses this font, and embed this font or unaltered
@@ -6,6 +6,6 @@ an ISO 3098 technical lettering font, licensed under the GNU LGPL version 3 with
   covered by the GNU General Public License. This exception does not however invalidate any other reasons why
   the document might be covered by the GNU General Public License.
 
-Modification: every glyph slanted by 15 degrees and narrowed to 0.85 width (sloped narrow lettering of
-GOST 2.304 / ISOCPEUR style); family renamed "osifont Italic Narrow". The modified font is distributed under the
+Modification: every glyph narrowed to 0.87 width (upright narrow lettering of
+GOST 2.304, as GOSTCommon); family renamed "osifont GOST". The modified font is distributed under the
 same license. Full license text: https://www.gnu.org/licenses/lgpl-3.0.txt
