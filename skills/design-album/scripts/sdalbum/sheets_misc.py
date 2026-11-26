@@ -224,9 +224,54 @@ def _merged_title(grp, titles):
     return "%s. %s" % (grp, txt[:1].upper() + txt[1:])
 
 
+def explanatory_items(A):
+    """Paragraphs of the explanatory note of the reference album: the existing premises, the project, the content of
+    the album, the style (only what the data says)."""
+    P = A.P
+    m = P.meta
+    out = []
+    n_r = len(P.rooms)
+    out.append(("Существующее помещение", "Помещение общей площадью %s м², %d %s; высота от чистого пола до плиты "
+                "перекрытия — %d мм. Размеры — по %s." % (
+                    fmt_area(P.total_area()), n_r, "помещение" if n_r == 1 else ("помещения" if n_r < 5 else "помещений"),
+                    P.slab, "3D-модели и обмеру заказчика" if m.get("scene_shift") is not None else "исходным данным")))
+    proj = []
+    if P.parts:
+        proj.append("возводятся перегородки (%d шт., см. план монтажа)" % len(P.parts))
+    else:
+        proj.append("перепланировка не предусмотрена")
+    ct = (P.ceilings or {}).get("types") or []
+    if ct:
+        proj.append("потолки: " + "; ".join("%s — %s" % (t["id"], t.get("short") or t.get("desc", "")) for t in ct))
+    fl = P.floors
+    if fl:
+        proj.append("полы: " + "; ".join("%s — %s" % (f["id"], f.get("material", "")) for f in fl))
+    out.append(("Проект", ("; ".join(proj) + ".")[:1].upper() + ("; ".join(proj) + ".")[1:]))
+    secs = sorted({t.split(".")[0] for _, k, t, *_ in A.sheets if k not in ("cover", "contents", "letter", "general")},
+                  key=lambda x: x)
+    out.append(("Состав проекта", "Альбом рабочих чертежей — %d листов (см. «Ведомость рабочих чертежей»): планы, "
+                "развёртки стен, 3D-виды, ведомости и сводные ведомости%s." % (
+                    A.total, ", мебель индивидуального изготовления" if A.sheet_no("items") else "")))
+    if m.get("style"):
+        out.append(("Стиль", m["style"]))
+    return out
+
+
+def explanatory_note(A, psp, x, y, width):
+    """«Пояснительная записка» under the top y; returns the bottom y."""
+    yy = S.heading(psp, x, y, "Пояснительная записка")
+    for head, txt in explanatory_items(A):
+        S.text(psp, head + ":", (x, yy), 2.5, "TOP_LEFT", "SD_Текст")
+        yy -= 4.0
+        S.mtext(psp, txt, (x, yy), 2.2, width, "SD_Текст", "TOP_LEFT", 1.3)
+        yy -= S.wrap_count(txt, width, 2.2) * 2.2 * 1.667 * 1.3 + 3.0
+    return yy
+
+
 def general(A, no, title, scale):
     P = A.P
-    psp = A.make_sheet(no, title, scale, "Состав альбома, общие указания, экспликация помещений")
+    psp = A.make_sheet(no, title, scale, "Пояснительная записка, общие указания, экспликация помещений"
+                       if A.sheet_no("contents") is not None else "Состав альбома, общие указания, экспликация помещений")
     rows = []
     sk = [x for x in A.sheets if x[1] == "items" and x[2].startswith("Мебель. ")]
     for n, k, t, s, fn, arg in A.sheets:
@@ -250,8 +295,11 @@ def general(A, no, title, scale):
             continue
         rows.append(["%02d" % n, t, s or "-", grp, [t]])
     rows = [r[:3] for r in rows]
-    yb = S.table(psp, 24, 256, [14, 118, 40], ["Лист", "Наименование", "Масштаб"], rows, h=1.8, aligns=["C", "L", "C"],
-                 title="Ведомость листов", head_h=6.0, zebra=True)
+    if A.sheet_no("contents") is not None:        # the list of sheets has its own sheet: the explanatory note here
+        yb = explanatory_note(A, psp, 24, 256, 176)
+    else:
+        yb = S.table(psp, 24, 256, [14, 118, 40], ["Лист", "Наименование", "Масштаб"], rows, h=1.8, aligns=["C", "L", "C"],
+                     title="Ведомость листов", head_h=6.0, zebra=True)
     notes = A.note_lines("general", [
         "Дизайн-проект разработан по исходным данным заказчика (3D-модель / чертежи / обмер).",
         "Все размеры - в миллиметрах, отметки - в метрах от уровня чистого пола (±0,000).",

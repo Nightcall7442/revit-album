@@ -32,14 +32,15 @@ SHEET_TITLES = {
     "switches": "План выключателей и групп", "sockets": "План розеток и электровыводов",
     "plumbing": "План сантехники", "finishes": "План отделки стен", "openings": "Ведомость заполнения проёмов",
     "windows": "Окна и витражи", "items": "Мебель индивидуального изготовления",
-    "elev_key": "План обозначения развёрток", "plinths": "План плинтусов", "heating": "План отопления",
+    "elev_key": "План обозначения развёрток", "contents": "Ведомость рабочих чертежей", "plinths": "План плинтусов", "heating": "План отопления",
     "cornices": "План карнизов", "furniture_dims": "План мебели с размерами. Ведомость дверей",
     "el_fittings": "Ведомость электрофурнитуры", "el_outputs": "План электровыводов",
 }
-DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
+DEFAULT_ORDER = ["cover", "contents", "letter", "general", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
                  "ceilings", "cornices", "furniture", "furniture_dims", "furniture_3d", "lighting_marks", "lighting_schedule",
                  "lighting", "switches", "sockets", "el_fittings", "el_outputs",
-                 "plumbing", "elev_key", "elevations", "openings", "windows", "items"]   # order of the reference album
+                 "plumbing", "elev_key", "elevations", "openings", "windows", "items",
+                 "summary_finishes", "summary_doors", "summary_electric", "summary_glass"]   # order of the reference album
 
 
 GAP = 5.0                                    # between the blocks of a column
@@ -277,6 +278,17 @@ class Album:
                     n += 1
                     self.sheets.append((n, key, title, scale, fn, arg))
                 continue
+            if key in ("summary_finishes", "summary_doors", "summary_electric", "summary_glass"):
+                from . import sheets_summary as SU
+                if SU.has_data(self, key):
+                    n += 1
+                    self.sheets.append((n, key, SU.TITLES[key], None, SU.summary_sheet, key))
+                continue
+            if key == "contents":
+                from . import sheets_summary as SU
+                n += 1
+                self.sheets.append((n, key, SHEET_TITLES[key], None, SU.contents, None))
+                continue
             if key in ("finishes_3d", "furniture_3d"):
                 from . import sheets_3d as S3
                 if S3.has_data(self, key):
@@ -297,6 +309,8 @@ class Album:
             fn, scale = reg[key]
             n += 1
             ttl = SHEET_TITLES[key]
+            if key == "general" and "contents" in self.sheet_keys:
+                ttl = "Общие данные. Пояснительная записка"
             if key == "sockets" and "el_outputs" in self.sheet_keys and SX.has_data(self, "el_outputs"):
                 ttl = "План розеток"
             self.sheets.append((n, key, ttl, scale, fn, None))

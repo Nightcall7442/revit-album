@@ -85,6 +85,27 @@ def _slashed(f, name, base):
     hmtx[name] = (hmtx[base][0], 0)
 
 
+def _ellipsis(f):
+    from fontTools.pens.transformPen import TransformPen as _TP
+    gs = f.getGlyphSet()
+    cm = f.getBestCmap()
+    per = cm[ord(".")]
+    w = f["hmtx"][per][0]
+    pen = TTGlyphPen(gs)
+    for i in range(3):
+        gs[per].draw(_TP(pen, (1, 0, 0, 1, i * w, 0)))
+    name = "ellipsis"
+    f["glyf"][name] = pen.glyph()
+    f["hmtx"][name] = (3 * w, 0)
+    order = f.getGlyphOrder()
+    if name not in order:
+        f.setGlyphOrder(order + [name])
+    for t in f["cmap"].tables:
+        if t.isUnicode():
+            t.cmap[0x2026] = name
+    f["maxp"].numGlyphs = len(f.getGlyphOrder())
+
+
 def main(src, dst):
     f = TTFont(src)
     gs = f.getGlyphSet()
@@ -111,6 +132,8 @@ def main(src, dst):
         hmtx[name] = (w, 0)
     for ch, base in (("Ø", "O"), ("ø", "o")):      # source: the ring and the stroke wound so that the ring fills
         _slashed(f, cm[ord(ch)], cm[ord(base)])
+    if 0x2026 not in cm:                           # «…» (the typography of the album writes it): three periods
+        _ellipsis(f)
     gs = f.getGlyphSet()
     sk = math.tan(math.radians(SLANT))
     out = {}
