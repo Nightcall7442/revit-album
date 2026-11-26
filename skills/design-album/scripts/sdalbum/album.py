@@ -30,10 +30,13 @@ SHEET_TITLES = {
     "ceilings": "План потолков", "lighting": "План освещения", "sockets": "План розеток и электровыводов",
     "plumbing": "План сантехники", "finishes": "План отделки стен", "openings": "Ведомость заполнения проёмов",
     "windows": "Окна и витражи", "items": "Мебель индивидуального изготовления",
-    "elev_key": "План обозначения развёрток",
+    "elev_key": "План обозначения развёрток", "plinths": "План плинтусов", "heating": "План отопления",
+    "cornices": "План карнизов", "furniture_dims": "План мебели с размерами. Ведомость дверей",
+    "el_fittings": "Ведомость электрофурнитуры", "el_outputs": "План электровыводов",
 }
-DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "furniture", "floors", "ceilings", "lighting",
-                 "sockets", "plumbing", "finishes", "elev_key", "elevations", "openings", "windows", "items"]
+DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "finishes", "floors", "plinths", "heating",
+                 "ceilings", "cornices", "furniture", "furniture_dims", "lighting", "sockets", "el_fittings", "el_outputs",
+                 "plumbing", "elev_key", "elevations", "openings", "windows", "items"]   # order of the reference album
 
 
 GAP = 5.0                                    # between the blocks of a column
@@ -246,6 +249,7 @@ class Album:
         from . import sheets_plans as SP
         from . import sheets_misc as SM
         from . import sheets_details as SD
+        from . import sheets_more as SX
         reg = {
             "cover": (SM.cover, None), "letter": (SM.letter, None), "general": (SM.general, None),
             "measured": (SP.measured, "1:%d" % self.plan_k), "partitions": (SP.partitions, "1:%d" % self.plan_k),
@@ -254,6 +258,9 @@ class Album:
             "sockets": (SP.sockets, "1:%d" % self.plan_k), "plumbing": (SP.plumbing, "1:%d" % self.plan_k),
             "finishes": (SP.finishes, "1:%d" % self.plan_k),
             "elev_key": (SP.elev_key, "1:%d" % self.plan_k),
+            "plinths": (SX.plinths, "1:%d" % self.plan_k), "heating": (SX.heating, "1:%d" % self.plan_k),
+            "cornices": (SX.cornices, "1:%d" % self.plan_k), "furniture_dims": (SX.furniture_dims, "1:%d" % self.plan_k),
+            "el_fittings": (SX.el_fittings, None), "el_outputs": (SX.el_outputs, "1:%d" % self.plan_k),
             "openings": (SD.openings_schedule, "1:%d" % SD.openings_k(P)),
             "windows": (SD.windows_sheet, "1:%d, 1:10" % SD.windows_k(P)),
         }
@@ -272,11 +279,14 @@ class Album:
                 continue
             if key not in reg:
                 continue
-            if not SP.has_data(self, key) or not SM.has_data(self, key):
+            if not SP.has_data(self, key) or not SM.has_data(self, key) or not SX.has_data(self, key):
                 continue
             fn, scale = reg[key]
             n += 1
-            self.sheets.append((n, key, SHEET_TITLES[key], scale, fn, None))
+            ttl = SHEET_TITLES[key]
+            if key == "sockets" and "el_outputs" in self.sheet_keys and SX.has_data(self, "el_outputs"):
+                ttl = "План розеток"
+            self.sheets.append((n, key, ttl, scale, fn, None))
         self.total = n
 
     def sheet_no(self, key):

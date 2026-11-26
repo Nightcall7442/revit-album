@@ -1515,6 +1515,20 @@ def socket_label(c):
 
 
 def sockets(A, no, title, scale):
+    """Sockets; with a plan of electrical outputs in the album the outputs (ВЫВ, КОНД, Р32, БРА) go there."""
+    from .sheets_more import OUTPUT_KINDS
+    P = A.P
+    if A.sheet_no("el_outputs") is not None:
+        keep = P.sockets
+        P.sockets = [s_ for s_ in keep if s_["kind"] not in OUTPUT_KINDS]
+        try:
+            return _sockets(A, no, title, scale)
+        finally:
+            P.sockets = keep
+    return _sockets(A, no, title, scale)
+
+
+def _sockets(A, no, title, scale):
     P = A.P
     k = A.plan_k
     psp, sp, occ = A.plan_sheet(no, title, scale, "Розетки, силовые выводы, слаботочные точки. Высоты - от чистого пола до центра")

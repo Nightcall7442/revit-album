@@ -34,7 +34,8 @@ from . import model as M
 from . import marks as MK
 from . import topo as T
 
-SECTIONS = ("floors", "ceilings", "finishes", "plumbing", "lighting", "switches", "sockets", "panel", "circuits", "elevations")
+SECTIONS = ("floors", "ceilings", "finishes", "plumbing", "lighting", "switches", "sockets", "panel", "circuits", "elevations",
+            "plinths", "heating")
 LUX = {"living": 150, "kitchen": 150, "wet": 50, "circulation": 50, "storage": 75, "public": 200, "bar": 200}
 FLUX, ETA, KZ = 500.0, 0.45, 1.25
 MIN_SPOTS = {"living": 4, "kitchen": 4, "wet": 2, "circulation": 2, "storage": 1, "public": 6, "bar": 3}
@@ -81,6 +82,10 @@ def propose(data, base_dir=".", sections=None):
     P = M.Project(d, base_dir)
     if "elevations" in want and not d.get("elevations"):
         _elevations(d, P, log)
+    if "plinths" in want and not d.get("plinths"):
+        _plinths(d, P, log)
+    if "heating" in want and not d.get("heating"):
+        _heating(d, P, log)
     if log:                                  # a statement in the general notes, not a question to the client
         txt = "По нормам как проектное предложение выполнены (отмечены на листах): %s." % (
             ", ".join(sorted(set(e["section"] for e in log))))
@@ -1667,3 +1672,96 @@ def _feature_walls(d, P):
             e["label"] = next(letters)
             out.append(e)
     return out
+
+
+# ------------------------------------------------------------------ plinths, heating (reference album: own plans)
+DRY_NO_PLINTH = ("wet",)
+
+
+def _plinths(d, P, log):
+    """Plinth П-1 along every dry room with a floor covering (tiled wet rooms: the wall tile meets the floor)."""
+    rooms = {}
+    for r in P.rooms:
+        if r.get("cls") in DRY_NO_PLINTH or not P.floor_of_room(r["name"]):
+            continue
+        rooms[r["name"]] = "П-1"
+    if not rooms:
+        return
+    d["plinths"] = dict(types=[dict(id="П-1", desc="Плинтус МДФ 80×16 мм под покраску, в цвет стен; крепление - клей "
+                                                   "+ скрытый крепёж", h=80, rgb=[150, 110, 70], proposed=True)],
+                        rooms=rooms)
+    _note(d, "plinths", "Плинтусы - проектное предложение: профиль и цвет согласовать с дизайнером.")
+    L(log, "плинтусы", "плинтус П-1 в %d помещениях (кроме мокрых зон)" % len(rooms), len(rooms))
+
+
+HEATED = ("living", "kitchen", "bedroom", "public", "hall", None)
+
+
+def _heating(d, P, log):
+    """Radiators under the windows of living rooms (width about 3/4 of the window, SP 60.13330), electric floor heating
+    with a thermostat in the wet rooms (outside, by the door, h 900)."""
+    rads, floors_, stats = [], [], []
+    types = {}
+    for r in P.rooms:
+        if r.get("cls") not in HEATED:
+            continue
+        for o, n, fp in T.room_openings(P, r, kinds=("window",)):
+            w = int(min(2000, max(400, round(0.75 * o["w"] / 100.0) * 100)))
+            key = (w, 500)
+            if key not in types:
+                types[key] = "Р-%d" % (len(types) + 1)
+            wall = P.wall_by_id[o["wall"]]
+            if wall["dir"] == "H":
+                x0, x1 = o["c"] - w / 2.0, o["c"] + w / 2.0
+                yf = fp[1] + n[1] * 50
+                rect = [x0, min(yf, yf + n[1] * 100), x1, max(yf, yf + n[1] * 100)]
+            else:
+                y0, y1 = o["c"] - w / 2.0, o["c"] + w / 2.0
+                xf = fp[0] + n[0] * 50
+                rect = [min(xf, xf + n[0] * 100), y0, max(xf, xf + n[0] * 100), y1]
+            rads.append(dict(id="Р.%d" % (len(rads) + 1), mark=types[key], rect=[_r(v) for v in rect], w=w, h=500,
+                             bottom=120, room=r["name"], n=list(n), proposed=True))
+    for r in P.rooms:
+        if r.get("cls") != "wet":
+            continue
+        g = r["shp"].buffer(-100, join_style=2)
+        for f, fg in T.furniture_shapes(P, ("wc", "bath", "shower", "washer", "cabinet", "wardrobe")):
+            if r["shp"].contains(fg.centroid):
+                g = g.difference(fg.buffer(50, join_style=2))
+        if g.is_empty or g.area < 0.5e6:
+            continue
+        g = max(getattr(g, "geoms", [g]), key=lambda q: q.area)
+        floors_.append(dict(room=r["name"], poly=[[_r(x), _r(y)] for x, y in list(g.exterior.coords)[:-1]],
+                            area=round(g.area / 1e6, 2), power=int(round(g.area / 1e6 * 150 / 10.0) * 10), proposed=True))
+        ent = T.room_entrances(P, r)
+        door = next((e for e in ent if e.get("opening") is not None), None)
+        if door is None:
+            continue
+        o = door["opening"]
+        nx, ny = door["n"]
+        a, b = door["ends"]
+        t = P.wall_by_id[o["wall"]].get("t", 100)
+        ux, uy = (b[0] - a[0]), (b[1] - a[1])
+        ln = math.hypot(ux, uy) or 1.0
+        ux, uy = ux / ln, uy / ln
+        out_room = door.get("other")
+        p = None
+        for end, sg in ((b, 1), (a, -1)):          # beside the door, on the side where the wall goes on in the room
+            q = (end[0] + sg * ux * 250 - nx * (t + 10), end[1] + sg * uy * 250 - ny * (t + 10))
+            probe = Point(q[0] - nx * 80, q[1] - ny * 80)
+            if out_room is not None and out_room["shp"].contains(probe):
+                p = q
+                break
+        if p is None:
+            continue
+        stats.append(dict(id="ТР.%d" % (len(stats) + 1), x=_r(p[0]), y=_r(p[1]), h=900, room=r["name"],
+                          where=(out_room or {}).get("name", ""), n=[-nx, -ny], proposed=True))
+    if not rads and not floors_:
+        return
+    d["heating"] = dict(radiators=rads, floors=floors_, thermostats=stats,
+                        types=[dict(id=m, desc="Радиатор стальной панельный тип 22, %d×%d мм, нижнее подключение, "
+                                                "термоголовка" % (w, h), w=w, h=h) for (w, h), m in types.items()])
+    _note(d, "heating", "Отопление - проектное предложение: мощность радиаторов и тип подключения - по теплотехническому "
+                        "расчёту и проекту ОВ; тёплый пол - электрический кабельный мат 150 Вт/м².")
+    L(log, "отопление", "радиаторы под окнами: %d шт.; тёплый пол в мокрых зонах: %d" % (len(rads), len(floors_)),
+      len(rads) + len(floors_))

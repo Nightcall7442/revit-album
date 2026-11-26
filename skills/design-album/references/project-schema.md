@@ -148,3 +148,13 @@ kinds: Р, Р2, РВ (IP44), Р32, ТВ, LAN, КОНД, БРА, ВЫВ. `panel`:
   `furn_mark` {"Имя@cx,cy": [x,y]}.
 - `sheets`: порядок / состав листов (ключи: cover, letter, general, measured, partitions, furniture, floors,
   ceilings, lighting, sockets, plumbing, finishes, elevations, openings).
+
+### `plinths` (план плинтусов)
+`{"types": [{"id": "П-1", "desc": "Плинтус МДФ 80×16 мм…", "h": 80, "rgb": [r,g,b]}], "rooms": {"Гостиная": "П-1"}}` —
+помещения с плинтусом и его марка; мокрые зоны по умолчанию без плинтуса (агент предлагает сам, `proposed`).
+
+### `heating` (план отопления)
+`{"radiators": [{"id", "mark": "Р-1", "rect": [x0,y0,x1,y1], "w", "h", "bottom", "room", "n"}],
+"floors": [{"room", "poly", "area", "power"}], "thermostats": [{"id", "x", "y", "h": 900, "room", "where", "n"}],
+"types": [{"id": "Р-1", "desc", "w", "h"}]}` — радиаторы под окнами (≈3/4 ширины окна, низ +0,120), электрический
+тёплый пол в мокрых зонах, терморегулятор снаружи у двери; предлагается агентом по нормам.

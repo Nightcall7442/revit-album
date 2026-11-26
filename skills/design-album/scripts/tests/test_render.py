@@ -25,3 +25,15 @@ def test_outline_of_detached_parts_is_the_building():
         mass = box(0, 0, 5000, 4000).difference(box(200, 200, 4800, 3800)).union(box(0, 9000, 3000, 9200))
     g = dims.outline_of(P)
     assert g.geom_type == "Polygon" and g.bounds == (0, 0, 5000, 4000)
+
+
+def test_qa_sees_the_room_hole_of_a_wall_fill():
+    # «zal proj»: every text in a room counted as «on the wall» - the QA took the wall fill without its holes
+    import ezdxf
+    from sdalbum import gfx, qa
+    d = ezdxf.new()
+    psp = d.layouts.new("t")
+    gfx.fill(psp, box(0, 0, 100, 100).difference(box(10, 10, 90, 90)), (38, 38, 40))
+    gfx.text(psp, "4545", (50, 50), 3.0)
+    issues, _ = qa.check_layout(d, psp, False)
+    assert not [i for i in issues if i["code"] == "TEXT_ON_WALL"]

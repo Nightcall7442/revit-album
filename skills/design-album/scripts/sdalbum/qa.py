@@ -107,12 +107,17 @@ class Recorder(BackendInterface):
             for p in paths:
                 self._glyph(p)
             return
+        g = None                         # the boundary paths of one fill, odd parity: holes (rooms in a wall fill) stay out
         for p in paths:
             pts = [(v.x, v.y) for v in p.flattening(0.1)]
             if len(pts) >= 3:
                 poly = Polygon(pts).buffer(0)
                 if not poly.is_empty:
-                    self.fills.append((poly, properties.color, properties.layer, properties.handle, self._o()))
+                    g = poly if g is None else g.symmetric_difference(poly)
+        if g is not None and not g.is_empty:
+            for part in getattr(g, "geoms", [g]):
+                if part.geom_type == "Polygon" and not part.is_empty:
+                    self.fills.append((part, properties.color, properties.layer, properties.handle, self._o()))
 
     def draw_filled_polygon(self, points, properties):
         if self.cur:
