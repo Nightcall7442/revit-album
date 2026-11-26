@@ -688,3 +688,15 @@
   Плоскость из материала пола альбома (основа под плиткой FloorGenerator) — это тот же пол; плоскость, большей
   частью лежащая вне помещений (улица, терраса), — не «потерянное покрытие».
 - Страж: test:test_a_wall_with_piers_is_cut_into_its_rectangles, test:test_a_wall_from_a_piece_of_a_cut_object_is_not_an_error, test:test_a_rack_built_around_a_column_is_not_in_the_wall, test:test_a_piece_running_past_the_wall_end_is_cut_in_the_elevation, test:test_an_empty_mesh_of_3ds_max_is_no_geometry, test:test_a_slab_with_its_top_at_the_floor_is_not_a_podium, test:test_a_floor_base_plane_and_a_street_plane_are_not_lost_coverings
+
+## L-113 «Zal proj»: заливки с отверстиями, проверка и имена объектов сцены
+- Симптом: на всех планах зал был залит чёрным, как стена (рендер PDF заливал «дыру» штриховки стиля «outer»), и
+  QA считал каждую надпись в помещении «текстом на стене» (63 ложные ошибки); 24 «светильника» вместо 8 модулей по 3
+  корпуса; люстры и бра были только изделиями; «BAY Chair and Issho Rectangle Table 8 Seater» стал «стулом» 5410 мм,
+  кресла «ARIMCHAIR» с текстурой этой группы — тоже «стульями»; лишний витраж в 5 м от зала разорвал контур здания.
+- Правило: штриховка — стиль normal (чёт-нечет), контуры одной заливки в QA — симметричной разностью; корпуса одного
+  типа в ряд ближе 140 мм — один светильник `heads: n`; люстры / подвесы / бра изделий — на план по местам изделий;
+  тип изделия — по именам объекта и его частей, имена материалов (текстуры другой мебели) — только если имя молчит;
+  «стол + стулья … N seater» — обеденная группа; кресло шириной от 1500 — диван; витраж дальше 600 мм от стен — не
+  стена здания; тип изделия переносится и на мебель плана.
+- Страж: test:test_fill_with_hole_leaves_the_hole_empty, test:test_qa_sees_the_room_hole_of_a_wall_fill, test:test_heads_of_one_module_are_one_fixture, test:test_chandeliers_and_wall_lights_of_the_items_go_on_the_plan, test:test_dining_set_and_armchairs_named_by_their_own_names, test:test_shop_front_far_from_the_building_is_not_a_wall

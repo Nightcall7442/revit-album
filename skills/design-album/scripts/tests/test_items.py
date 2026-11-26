@@ -511,3 +511,14 @@ def test_a_slab_with_its_top_at_the_floor_is_not_a_podium(tmp_path):
     sc.mesh("Box2131637803", _box(5000, 2000, 0, 5640, 2450, 101), mats=["Material #1"])
     items, _ = scene_items.collect(sc.rows, sc.meshes, 1.0, dict(walls=walls, furniture=[]), str(tmp_path / "imp"))
     assert [it["src"] for it in items] == ["Box2131637803"]
+
+
+def test_dining_set_and_armchairs_named_by_their_own_names():
+    # «zal proj»: «BAY Chair and Issho Rectangle Table 8 Seater» (a table with 8 chairs, one model) was a 5410 mm «chair»;
+    # the armchairs «ARIMCHAIR» carrying a texture of that set were «chairs» too
+    from sdalbum import items as I
+    tex = ["BAY Chair and Issho Rectangle Table 8 Seater-006"]
+    assert I.classify(dict(src="Group2132607179", parts=["BAY Chair and Issho Rectangle Table 8 Seater"], mats=[],
+                           size=[5410, 1832, 798]), None) == "dining_set"
+    assert I.classify(dict(src="ARIMCHAIR_017", parts=["ARIMCHAIR"], mats=tex, size=[1974, 865, 834]), None) == "sofa"
+    assert I.classify(dict(src="ARIMCHAIR_011", parts=["ARIMCHAIR"], mats=tex, size=[1247, 865, 834]), None) == "armchair"
