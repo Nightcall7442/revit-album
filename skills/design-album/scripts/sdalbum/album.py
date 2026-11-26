@@ -36,8 +36,8 @@ SHEET_TITLES = {
     "cornices": "План карнизов", "furniture_dims": "План мебели с размерами. Ведомость дверей",
     "el_fittings": "Ведомость электрофурнитуры", "el_outputs": "План электровыводов",
 }
-DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "finishes", "floors", "plinths", "heating",
-                 "ceilings", "cornices", "furniture", "furniture_dims", "lighting_marks", "lighting_schedule",
+DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
+                 "ceilings", "cornices", "furniture", "furniture_dims", "furniture_3d", "lighting_marks", "lighting_schedule",
                  "lighting", "switches", "sockets", "el_fittings", "el_outputs",
                  "plumbing", "elev_key", "elevations", "openings", "windows", "items"]   # order of the reference album
 
@@ -276,6 +276,13 @@ class Album:
                 for title, scale, fn, arg in SD.elevation_sheets(self):
                     n += 1
                     self.sheets.append((n, key, title, scale, fn, arg))
+                continue
+            if key in ("finishes_3d", "furniture_3d"):
+                from . import sheets_3d as S3
+                if S3.has_data(self, key):
+                    for title, scale, fn, arg in S3.sheets(self, key):
+                        n += 1
+                        self.sheets.append((n, key, title, scale, fn, arg))
                 continue
             if key == "items":
                 from . import sheets_items as SI

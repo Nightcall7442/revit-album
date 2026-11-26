@@ -116,13 +116,18 @@ def test_cover_logo_visible(tmp_path):
     from PIL import Image
     from sdalbum import album, model
     from sdalbum.placer import flush_all
-    A = album.Album(model.load(URGENCH), str(tmp_path), ["cover"])
-    A.build()
-    A.render_pdf(str(tmp_path / "c.pdf"), str(tmp_path / "png"), dpi=60)
-    im = np.array(Image.open(tmp_path / "png" / "s01.png").convert("L")).astype(float)
     k = 60 / 25.4
-    crop = im[int((297 - 262) * k):int((297 - 234) * k), int(30 * k):int(146 * k)]
-    assert (crop < 90).mean() > 0.08, "logo not visible on the cover"
+    # studio cover: the big logo top left; reference cover: the logo in the top left corner of the frame
+    for style, (y0, y1, x0, x1) in (("studio", (234, 262, 30, 146)), ("reference", (270, 285, 28, 74))):
+        P = model.load(URGENCH)
+        P.meta["cover_style"] = style
+        out = tmp_path / style
+        A = album.Album(P, str(out), ["cover"])
+        A.build()
+        A.render_pdf(str(out / "c.pdf"), str(out / "png"), dpi=60)
+        im = np.array(Image.open(out / "png" / "s01.png").convert("L")).astype(float)
+        crop = im[int((297 - y1) * k):int((297 - y0) * k), int(x0 * k):int(x1 * k)]
+        assert (crop < 90).mean() > 0.08, "logo not visible on the %s cover" % style
 
 
 def test_measured_binds_passage_and_interior_doors(tmp_path):

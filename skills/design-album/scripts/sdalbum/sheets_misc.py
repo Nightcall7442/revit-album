@@ -58,6 +58,67 @@ def _logo_on_gradient(src, dst, insert, w_mm):
 
 
 def cover(A, no, title, scale):
+    """The title sheet. By default as on the reference album (an axonometry of the flat, the project fields, the city
+    and the year); meta.cover_style = "studio" - the studio cover with the hexagon band."""
+    if (A.P.meta.get("cover_style") or "reference") != "studio":
+        return cover_reference(A, no, title, scale)
+    return cover_studio(A, no, title, scale)
+
+
+COVER_FIELDS = (("Проект", "object"), ("Адрес", "place"), ("Заказчик", "client"), ("Дизайнер", "designer"),
+                ("Проектировщик", "engineer"))
+
+
+def cover_reference(A, no, title, scale):
+    """Title of the reference album: frame, the name of the album at the top, the axonometry of the flat in the
+    middle, the fields «Проект / Адрес / Заказчик / Дизайнер / Проектировщик» bottom left (empty ones left out),
+    the city and the year bottom right, the logo top left."""
+    from . import iso3d
+    P = A.P
+    m = P.meta
+    psp = A.make_sheet(no, title, scale, header=False, stamp=False)
+    S.frame(psp, A.info)
+    if A.logo_def is not None:
+        iw, ih = A.logo_def.dxf.image_size.x, A.logo_def.dxf.image_size.y
+        w = 46.0
+        img = psp.add_image(A.logo_def, insert=(28, 286 - w * ih / iw), size_in_units=(w, w * ih / iw),
+                            dxfattribs={"layer": "SD_Штамп"})
+        img.rgb = (254, 254, 254)
+    lines = m.get("title", "ДИЗАЙН-ПРОЕКТ|ИНТЕРЬЕРА").replace("|", " ")
+    S.text(psp, lines, (217.5, 272.0), 7.0, "MIDDLE_CENTER")
+    S.line(psp, (130, 265.5), (305, 265.5), "SD_Тонкие", (40, 40, 40), 25)
+    S.text(psp, m.get("album", "Альбом рабочих чертежей"), (217.5, 258.0), 3.5, "MIDDLE_CENTER", rgb=(60, 60, 60))
+    png = os.path.join(A.out_dir, "cover_3d.png")
+    got = None
+    try:
+        got = iso3d.render_models(P, png, elev=38.0, azim=-58.0, width=2200) if (P.d.get("items") or P.furniture) \
+            else iso3d.render(P, png)
+    except Exception:
+        got = None
+    if got and os.path.isfile(png):
+        iw, ih = Image.open(png).size
+        bx0, by0, bx1, by1 = 40.0, 62.0, 395.0, 248.0
+        s_ = min((bx1 - bx0) / iw, (by1 - by0) / ih)
+        ins = (bx0 + ((bx1 - bx0) - iw * s_) / 2.0, by0 + ((by1 - by0) - ih * s_) / 2.0)
+        img = psp.add_image(A.image("cover_3d.png", png), insert=ins, size_in_units=(iw * s_, ih * s_),
+                            dxfattribs={"layer": "SD_Мебель"})
+        img.rgb = (254, 254, 254)
+    y = 50.0
+    for lab, key in COVER_FIELDS:
+        v = (m.get(key) or "").strip()
+        if not v:
+            continue                                  # empty fields are left out (not «Листов» with nothing)
+        S.text(psp, lab + ":", (28.0, y), 3.0, "MIDDLE_LEFT", rgb=(90, 90, 90))
+        S.text(psp, v, (62.0, y), 3.5, "MIDDLE_LEFT")
+        y -= 8.0
+    city = (m.get("city") or "").strip()
+    year = str(m.get("year") or "").strip()
+    foot = ("%s %s" % (city, year)).strip()
+    if foot:
+        S.text(psp, foot, (410.0, 14.0), 4.0, "MIDDLE_RIGHT")
+
+
+def cover_studio(A, no, title, scale):
     m = A.P.meta
     psp = A.make_sheet(no, title, scale, header=False, stamp=False)
     lw_mm = 120.0
