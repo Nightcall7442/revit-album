@@ -54,7 +54,7 @@ def test_lighting_binds_track_not_spots(tmp_path):
 def test_socket_labels_stay_in_rooms(tmp_path):
     A, no, blk = _sheet(URGENCH, "sockets", tmp_path)
     rooms = unary_union([r["shp"] for r in A.P.rooms]).buffer(60)
-    labels = [(e.dxf.text, p) for e, p in _texts(blk) if e.dxf.text.startswith("h") and "гр." in e.dxf.text]
+    labels = [(e.dxf.text, p) for e, p in _texts(blk) if e.dxf.text.startswith("Н=") and "гр." in e.dxf.text]
     assert labels
     for s, p in labels:
         assert rooms.contains(Point(p[0], p[1])), "label %r outside the rooms at %s" % (s, p)
@@ -147,8 +147,8 @@ def test_no_binding_text_on_door_leaves(tmp_path):
 def test_socket_label_pairs_heights_with_groups():
     from sdalbum.sheets_plans import socket_label
     c = [dict(h=300, group="6"), dict(h=2150, group="5")]
-    assert socket_label(c) == "h300 гр.6; h2150 гр.5"
-    assert socket_label([dict(h=300, group="5"), dict(h=1100, group="5")]) == "h300/1100 · гр.5"
+    assert socket_label(c) == "Н= 300 мм гр.6; Н= 2150 мм гр.5"
+    assert socket_label([dict(h=300, group="5"), dict(h=1100, group="5")]) == "Н= 300/1100 мм · гр.5"
 
 
 def test_socket_bindings_are_real_positions(tmp_path):

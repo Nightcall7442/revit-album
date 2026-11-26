@@ -10,7 +10,7 @@ from shapely.ops import unary_union
 
 KNOWN_SOCKETS = ("Р", "Р2", "РВ", "Р32", "ТВ", "LAN", "КОНД", "БРА", "ВЫВ")
 KNOWN_LIGHTS = ("spot", "spot_ip44", "spot2", "spot2_ip44", "surface", "chandelier", "pendant", "linear", "track",
-                "track_rect", "track_spot", "led")
+                "track_rect", "track_spot", "led", "wall")
 STACKABLE = {("kitchen_upper", "kitchen_base"), ("kitchen_upper", "fridge"), ("sink", "kitchen_base"), ("hob", "kitchen_base"),
              ("tv", "tv_stand"), ("tv", "cabinet"), ("mirror", "shoe_cabinet"), ("mirror", "cabinet"), ("rail", "wc"),
              ("basin", "wc"), ("mirror", "basin"), ("kitchen_upper", "sink"), ("kitchen_upper", "hob"), ("chair", "table"),

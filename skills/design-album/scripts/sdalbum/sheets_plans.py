@@ -32,6 +32,9 @@ def has_data(A, key):
         "floors": bool(P.floors),
         "ceilings": bool(P.rooms),
         "lighting": bool(P.lighting),
+        "lighting_marks": bool(P.lighting),
+        "lighting_schedule": bool(P.lighting),
+        "switches": bool(P.switches),
         "sockets": bool(P.sockets),
         "plumbing": bool(P.plumbing),
         "finishes": bool(P.rooms),
@@ -1365,9 +1368,21 @@ def _pairs(P, rm):
     return xs, ys
 
 
-def lighting(A, no, title, scale):
+def lighting_bind(A, no, title, scale):
+    """«План освещения. Привязки»: every fixture bound to the walls in red, no switches (reference album)."""
+    return lighting(A, no, title, scale, mode="bind")
+
+
+def lighting_switch(A, no, title, scale):
+    """«План выключателей и групп»: switches, control lines, keys; no bindings."""
+    return lighting(A, no, title, scale, mode="switch")
+
+
+def lighting(A, no, title, scale, mode="all"):
     P = A.P
     k = A.plan_k
+    sw_on = mode != "bind"
+    bind_on = mode != "switch"
     psp, sp, occ = A.plan_sheet(no, title, scale, "Светильники, выключатели, группы управления. Привязки - по центрам светильников")
     Y.furniture_ghost(sp, P, k)
     Y.draw_walls(sp, P, k)
@@ -1377,7 +1392,7 @@ def lighting(A, no, title, scale):
     for z in P.ceilings.get("zones", []):
         if z.get("kind") in ("bulkhead",):
             Y.dashed_poly(sp, z["poly"], 1.0 * k, 0.6 * k, (120, 120, 120), 13)
-    for r_ in wiring_runs(P):
+    for r_ in (wiring_runs(P) if sw_on else []):
         for a, b in r_["segs"]:
             Y.dashed(sp, a, b, 1.0 * k, 0.5 * k, (214, 90, 90), 13, "SD_Проводка")
             occ.add(LineString([a, b]).buffer(0.6 * k), "wire")      # binding texts keep off the control lines
@@ -1385,12 +1400,12 @@ def lighting(A, no, title, scale):
     for f in sorted(P.lighting, key=lambda f: order.get(f["kind"], 5)):
         occ.add(Y.light_icon(sp, f, k), "sym")
     sw_c = {}
-    for s in P.switches:
+    for s in (P.switches if sw_on else []):
         c, g = Y.switch_icon(sp, s, k)
         sw_c[s["id"]] = c
         occ.add(g, "sym")
     # key letters near the first segment of each run
-    for r_ in wiring_runs(P):
+    for r_ in (wiring_runs(P) if sw_on else []):
         if not r_["key"] or len(r_["pts"]) < 2:
             continue
         a, b = r_["pts"][0], r_["pts"][1]
@@ -1401,7 +1416,7 @@ def lighting(A, no, title, scale):
             nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
             cands += [(m[0] + nx * 1.4 * k, m[1] + ny * 1.4 * k), (m[0] - nx * 1.4 * k, m[1] - ny * 1.4 * k)]
         place_text(sp, occ, r_["key"], cands, 1.8 * k, bold=True, rgb=(190, 40, 40), mask=True)
-    for s in P.switches:
+    for s in (P.switches if sw_on else []):
         label_near(A, sp, occ, s["id"], sw_c[s["id"]], h=1.9, bold=True, dists=(3.2, 4.5, 6.0, 8.0))
     # LED lengths
     for f in P.lighting:
@@ -1421,7 +1436,7 @@ def lighting(A, no, title, scale):
         place_text(sp, occ, t, cands, 1.6 * k, rgb=(185, 110, 0), mask=True)
     # binding chains per room: fixed fixtures only. Track spots / linear modules ride on the track and are
     # movable -> bound through the track itself; LED strips carry their own length label.
-    for rm in P.rooms:
+    for rm in (P.rooms if bind_on else []):
         for vals, pos, vert in light_bindings(P, rm):
             with DM.color(DM.RED):               # electrics: bindings in red (reference album)
                 DM.chain(sp, vals, pos, pos, k, occ, vertical=vert, merge=20.0)
@@ -1441,9 +1456,13 @@ def lighting(A, no, title, scale):
             qty = str(len(fx))
         groups = sorted(set(f.get("group", "") for f in fx))
         items.append((_lg_light(kd), [spec.get(kd, LIGHT_SPEC.get(kd, kd)), qty, ", ".join(groups)]))
-    items.append((_lg_sym(lambda p, cx, cy: Y.switch_icon(p, dict(id="", x=cx - 1.0, y=cy - 1.3, wall="Y+", keys=2), 1.0)),
-                  ["Выключатель (штрихи = клавиши)", str(len(P.switches)), "см. таблицу"]))
-    items.append((_lg_wire, ["Линия управления; а, б, в - клавиши", "-", ""]))
+    if sw_on:
+        items.append((_lg_sym(lambda p, cx, cy: Y.switch_icon(p, dict(id="", x=cx - 1.0, y=cy - 1.3, wall="Y+", keys=2), 1.0)),
+                      ["Выключатель (штрихи = клавиши)", str(len(P.switches)), "см. таблицу"]))
+        items.append((_lg_wire, ["Линия управления; а, б, в - клавиши", "-", ""]))
+    else:
+        items.append((_lg_sym(lambda p, cx, cy: S.line(p, (cx - 6, cy), (cx + 6, cy), "SD_Таблицы", S.C_RED, 25)),
+                      ["Привязки светильников к стенам, мм", "-", ""]))
     col.legend_table(items, ["Эскиз", "Наименование", "Кол.", "Группа"], [15, 54, 10, 30], aligns=["C", "L", "C", "L"])
     sw_rows = []
     MODE = {"pass": " (проходной)", "cross": " (перекрёстный)"}
@@ -1453,8 +1472,9 @@ def lighting(A, no, title, scale):
         if s.get("pass_through") and not any(c.get("mode") for c in s.get("controls", [])):
             ctrl = (ctrl + " (проходной)") if ctrl else s.get("note", "проходной")
         sw_rows.append([s["id"], str(s.get("keys", 1)), str(s.get("h", 900)), ctrl])
-    col.table([10, 10, 10, 79], ["Марка", "Клав.", "h, мм", "Управление"], sw_rows, title="Выключатели", h=1.5,
-              aligns=["C", "C", "C", "L"], head_h=5.0)
+    if sw_on and sw_rows:
+        col.table([10, 10, 10, 79], ["Марка", "Клав.", "h, мм", "Управление"], sw_rows, title="Выключатели", h=1.5,
+                  aligns=["C", "C", "C", "L"], head_h=5.0)
     col.notes(A.note_lines("lighting", [
         "Высота выключателей - 900 мм, у кровати - 700 мм от чистого пола (если не указано иное).",
         "Блоки питания LED / треков - в доступных местах с ревизией.",
@@ -1508,10 +1528,10 @@ def socket_label(c):
 
     def gname(g):
         return "" if not g else ("сл." if g.startswith("сл") else "гр.%s" % g)
-    if len(by) == 1:
+    if len(by) == 1:                     # «Н= 1100 мм» of the reference album
         g, hs = next(iter(by.items()))
-        return "h%s" % "/".join(str(h) for h in hs) + (" · %s" % gname(g) if g else "")
-    return "; ".join(("h%s %s" % ("/".join(str(h) for h in hs), gname(g))).strip() for g, hs in by.items())
+        return "Н= %s мм" % "/".join(str(h) for h in hs) + (" · %s" % gname(g) if g else "")
+    return "; ".join(("Н= %s мм %s" % ("/".join(str(h) for h in hs), gname(g))).strip() for g, hs in by.items())
 
 
 def sockets(A, no, title, scale):
@@ -1582,8 +1602,10 @@ def _sockets(A, no, title, scale):
                 far.append((cen[0] + t[0] * sh * L + n[0] * off * k, cen[1] + t[1] * sh * L + n[1] * off * k, 0 if rot else 90))
         rm = P.room_of_point(cen, 200)
         within = rm["shp"].buffer(-0.3 * k) if rm else None
-        res = place_text(sp, occ, lab, [(c_[0], c_[1], rot) for c_ in cands] + far, 1.5 * k, rgb=(40, 40, 40), mask=True,
+        res = place_text(sp, occ, lab, [(c_[0], c_[1], rot) for c_ in cands] + far, 1.5 * k, rgb=S.C_RED, mask=True,
                          within=within)
+        if res:                              # the height in a red frame (reference album)
+            Y.outline(sp, res[1], S.C_RED, 13, "SD_Электрика")
         if res and math.hypot(res[0][0] - cen[0], res[0][1] - cen[1]) > 6.0 * k:
             q = res[1].exterior.interpolate(res[1].exterior.project(Point(cen)))
             S.line(sp, (q.x, q.y), (cen[0] + n[0] * 0.8 * k, cen[1] + n[1] * 0.8 * k), "SD_Тонкие", (90, 90, 90), 9)

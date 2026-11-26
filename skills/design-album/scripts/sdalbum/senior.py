@@ -508,6 +508,8 @@ def _lights_from_model(d, base_dir, log):
             continue
         seen.append(o)
         uniq.append(o)
+    uniq = _merge_heads(uniq)
+    uniq += _lights_of_items(d, P, uniq)
     # a fixture closer than 300 to a wall face (a downlight in a cubicle corner) is kept: it is the design
     for o in uniq:
         if o["kind"] not in ("track", "chandelier"):
@@ -520,13 +522,17 @@ def _lights_from_model(d, base_dir, log):
     ch = [o for o in uniq if o["kind"] == "chandelier"]
     if ch:
         nm = next((o["model"] for o in ch if o.get("model")), "")
-        spec["chandelier"] = "Люстра подвесная%s Ø%d, низ %s от пола (по модели; эскиз изделия)" % (
-            (" " + nm) if nm else "", max(o["d"] for o in ch), ", ".join(sorted({("+%.3f" % (o["z"] / 1000.0)).replace(".", ",") for o in ch})))
+        base = nm if nm.lower().startswith(("люстр", "светил")) else "Люстра подвесная" + ((" " + nm) if nm else "")
+        if "Ø" not in base:                       # the item name already carries its type and diameter
+            base += " Ø%d" % max(o["d"] for o in ch)
+        spec["chandelier"] = "%s, низ %s от пола (по модели; эскиз изделия)" % (
+            base, ", ".join(sorted({("+%.3f" % (o["z"] / 1000.0)).replace(".", ",") for o in ch})))
     wl = [o for o in uniq if o["kind"] == "wall"]
     if wl:
         nm = next((o["model"] for o in wl if o.get("model")), "")
-        spec["wall"] = "Бра настенное%s, центр %s от пола (по модели)" % (
-            (" " + nm) if nm else "", ", ".join(sorted({("+%.3f" % (o["h"] / 1000.0)).replace(".", ",") for o in wl})))
+        base = nm if nm.lower().startswith("бра") else "Бра настенное" + ((" " + nm) if nm else "")
+        spec["wall"] = "%s, центр %s от пола (по модели)" % (
+            base, ", ".join(sorted({("+%.3f" % (o["h"] / 1000.0)).replace(".", ",") for o in wl})))
     tz = sorted({t[1] for t in tracks})
     if tz:
         spec["track"] = "Шинопровод однофазный, подвесной на тросах, низ %s (по модели)" % ", ".join(
@@ -539,6 +545,75 @@ def _lights_from_model(d, base_dir, log):
     D(log, "Освещение", "светильники перенесены из модели дизайнера: " + ", ".join("%s %d" % (names.get(k, k), v) for k, v in cnt.items())
       + ("; скрытые за подвесным потолком / вне плана не переносились (%d)" % hidden if hidden else ""),
       "свет - авторское решение дизайнера, норма освещённости обеспечивается количеством из модели")
+
+
+def _merge_heads(lights, gap=140.0):
+    """Bodies of one kind standing in a row closer than gap (a module of 3 heads read as 3 lamps) -> one fixture
+    with heads = n, at the centre of the row (x, y) and its ends (x1, y1, x2, y2 for drawing)."""
+    pts = [o for o in lights if o["kind"] in ("surface", "spot", "spot_ip44")]
+    rest = [o for o in lights if o not in pts]
+    seen, out = set(), []
+    for i, o in enumerate(pts):
+        if i in seen:
+            continue
+        grp, todo = [i], [i]
+        seen.add(i)
+        while todo:
+            a = pts[todo.pop()]
+            for j, b in enumerate(pts):
+                if j not in seen and b["kind"] == a["kind"] and b.get("group") == a.get("group") \
+                        and math.hypot(a["x"] - b["x"], a["y"] - b["y"]) <= gap:
+                    seen.add(j)
+                    grp.append(j)
+                    todo.append(j)
+        g = [pts[j] for j in grp]
+        if len(g) == 1:
+            out.append(o)
+            continue
+        xs, ys = [q["x"] for q in g], [q["y"] for q in g]
+        m = dict(g[0])
+        m.update(x=T.snap(sum(xs) / len(g)), y=T.snap(sum(ys) / len(g)), heads=len(g),
+                 ends=[[min(xs), min(ys)], [max(xs), max(ys)]])
+        out.append(m)
+    return rest + out
+
+
+def _lights_of_items(d, P, have):
+    """Chandeliers, pendants and wall lights the scene has as items (sketches of their own) but not as light sources:
+    on the lighting plan at their places."""
+    out = []
+    for it in d.get("items") or []:
+        kind = it.get("kind") or it.get("kind_hint")
+        if kind not in ("chandelier", "pendant", "sconce"):
+            continue
+        size = it.get("size") or [0, 0, 0]
+        for pl in it.get("places") or []:
+            x, y = pl[0], pl[1]
+            if any(math.hypot(x - o["x"], y - o["y"]) < 400 for o in have + out):
+                continue
+            r = P.room_of_point((x, y), 300)
+            if r is None:
+                continue
+            model = it.get("name", "")
+            if kind == "sconce":
+                face = None
+                p = Point(x, y)
+                for seg, n in T.wall_faces(P, r, 0.0, kinds=()):
+                    dd = seg.distance(p)
+                    if dd <= 400 and (face is None or dd < face[0]):
+                        face = (dd, seg, n)
+                if face is None:
+                    continue
+                _, seg, n = face
+                q = seg.interpolate(seg.project(p))
+                out.append(dict(kind="wall", x=T.snap(q.x), y=T.snap(q.y), nx=n[0], ny=n[1],
+                                h=int(round((it.get("z0", 1500) + size[2] / 2.0) / 10.0) * 10), group=r["name"],
+                                source="модель", model=model, item=it.get("pos")))
+            else:
+                out.append(dict(kind="chandelier" if kind == "chandelier" else "pendant", x=T.snap(x), y=T.snap(y),
+                                d=int(round(max(size[0], size[1]) / 10.0) * 10), z=int(round(it.get("z0", 2500) / 10.0) * 10),
+                                group=r["name"], source="модель", model=model, item=it.get("pos")))
+    return out
 
 
 # ------------------------------------------------------------------ entrance (evacuation)

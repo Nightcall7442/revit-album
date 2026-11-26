@@ -359,9 +359,33 @@ def _filled_circle(sp, c, r, rgb, layer="SD_Свет"):
     S.fill(sp, Point(c).buffer(r, 24), rgb, layer)
 
 
+def _multi_head(sp, f, k):
+    """A module of n heads in a row: a capsule along the row, a head symbol per lamp."""
+    n = f["heads"]
+    (x0, y0), (x1, y1) = f.get("ends") or [[f["x"], f["y"]], [f["x"], f["y"]]]
+    horiz = (x1 - x0) >= (y1 - y0)
+    col = S.C_BLUE if f["kind"] == "spot_ip44" else S.C_RED
+    r = 0.95 * k
+    step = 2.2 * r
+    L = step * (n - 1)
+    cx, cy = f["x"], f["y"]
+    ux, uy = (1.0, 0.0) if horiz else (0.0, 1.0)
+    a = (cx - ux * L / 2, cy - uy * L / 2)
+    b = (cx + ux * L / 2, cy + uy * L / 2)
+    cap = LineString([a, b]).buffer(1.35 * r, 24)
+    S.fill(sp, cap, WHITE, "SD_Свет")
+    outline(sp, cap, col, 25, "SD_Свет")
+    for i in range(n):
+        c = (a[0] + ux * step * i, a[1] + uy * step * i)
+        _filled_circle(sp, c, 0.6 * r, col) if f["kind"] == "surface" else S.circle(sp, c, 0.75 * r, "SD_Свет", col, 18)
+    return cap.buffer(0.2 * k)
+
+
 def light_icon(sp, f, k):
     """Draws a fixture; returns its footprint (for collision registry)."""
     kind, x, y = f["kind"], f["x"], f["y"]
+    if f.get("heads", 1) > 1 and kind in ("surface", "spot", "spot_ip44"):
+        return _multi_head(sp, f, k)
     if kind in ("spot", "spot_ip44"):
         col = S.C_RED if kind == "spot" else S.C_BLUE
         S.fill(sp, Point(x, y).buffer(1.25 * k, 24), WHITE, "SD_Свет")

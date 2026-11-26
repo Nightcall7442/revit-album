@@ -27,7 +27,9 @@ HEALABLE = ("LINE_THROUGH_TEXT", "TEXT_ON_WALL", "TEXT_OVERLAP")
 SHEET_TITLES = {
     "cover": "Обложка", "letter": "Обращение к заказчику", "general": "Общие данные", "measured": "Обмерный план",
     "partitions": "План монтажа перегородок", "furniture": "План расстановки мебели", "floors": "План полов",
-    "ceilings": "План потолков", "lighting": "План освещения", "sockets": "План розеток и электровыводов",
+    "ceilings": "План потолков", "lighting": "План освещения. Привязки",
+    "lighting_marks": "План освещения. Маркировка", "lighting_schedule": "Ведомость светильников",
+    "switches": "План выключателей и групп", "sockets": "План розеток и электровыводов",
     "plumbing": "План сантехники", "finishes": "План отделки стен", "openings": "Ведомость заполнения проёмов",
     "windows": "Окна и витражи", "items": "Мебель индивидуального изготовления",
     "elev_key": "План обозначения развёрток", "plinths": "План плинтусов", "heating": "План отопления",
@@ -35,7 +37,8 @@ SHEET_TITLES = {
     "el_fittings": "Ведомость электрофурнитуры", "el_outputs": "План электровыводов",
 }
 DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "finishes", "floors", "plinths", "heating",
-                 "ceilings", "cornices", "furniture", "furniture_dims", "lighting", "sockets", "el_fittings", "el_outputs",
+                 "ceilings", "cornices", "furniture", "furniture_dims", "lighting_marks", "lighting_schedule",
+                 "lighting", "switches", "sockets", "el_fittings", "el_outputs",
                  "plumbing", "elev_key", "elevations", "openings", "windows", "items"]   # order of the reference album
 
 
@@ -250,11 +253,14 @@ class Album:
         from . import sheets_misc as SM
         from . import sheets_details as SD
         from . import sheets_more as SX
+        from . import sheets_light as SL
         reg = {
             "cover": (SM.cover, None), "letter": (SM.letter, None), "general": (SM.general, None),
             "measured": (SP.measured, "1:%d" % self.plan_k), "partitions": (SP.partitions, "1:%d" % self.plan_k),
             "furniture": (SP.furniture, "1:%d" % self.plan_k), "floors": (SP.floors, "1:%d" % self.plan_k),
-            "ceilings": (SP.ceilings, "1:%d" % self.plan_k), "lighting": (SP.lighting, "1:%d" % self.plan_k),
+            "ceilings": (SP.ceilings, "1:%d" % self.plan_k), "lighting": (SP.lighting_bind, "1:%d" % self.plan_k),
+            "lighting_marks": (SL.lighting_marks, "1:%d" % self.plan_k), "lighting_schedule": (SL.lighting_schedule, None),
+            "switches": (SP.lighting_switch, "1:%d" % self.plan_k),
             "sockets": (SP.sockets, "1:%d" % self.plan_k), "plumbing": (SP.plumbing, "1:%d" % self.plan_k),
             "finishes": (SP.finishes, "1:%d" % self.plan_k),
             "elev_key": (SP.elev_key, "1:%d" % self.plan_k),
