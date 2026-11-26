@@ -1627,14 +1627,16 @@ def _sockets(A, no, title, scale):
                       {"ЩК": "Щит квартирный", "ЩР": "Щит распределительный", "ЩО": "Щит освещения"}.get(
                           P.panel.get("name", "ЩК"), "Щит %s" % P.panel.get("name", ""))))
     col.legend(items, rh=5.2)
+    notes = A.note_lines("sockets", [
+        "Схема %s - рекомендуемая; окончательно - по электропроекту с учётом выделенной мощности." % (P.panel or {}).get("name", "ЩК"),
+        "Прокладка - в гофре, по стенам строго вертикально / горизонтально; в санузлах - вне зон 0-1.",
+    ])
     if P.circuits and A.sheet_no("el_fittings") is None:      # else on the schedule of the electrical fittings
         pn = (P.panel or {}).get("name", "ЩК")
         col.table([9, 27, 27, 46], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits,
-                  title="Групповые линии (рекомендуемая схема %s)" % pn, h=1.5, aligns=["C", "L", "L", "L"], head_h=5.0)
-    col.notes(A.note_lines("sockets", [
-        "Схема %s - рекомендуемая; окончательно - по электропроекту с учётом выделенной мощности." % (P.panel or {}).get("name", "ЩК"),
-        "Прокладка - в гофре, по стенам строго вертикально / горизонтально; в санузлах - вне зон 0-1.",
-    ]))
+                  title="Групповые линии (рекомендуемая схема %s)" % pn, h=1.5, aligns=["C", "L", "L", "L"], head_h=5.0,
+                  reserve=S.notes_height(notes, col.w - 1, 1.8) + 2.0)
+    col.notes(notes)
 
 
 def _lg_socket(kind):

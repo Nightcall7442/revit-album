@@ -401,11 +401,18 @@ def elevation_sheets(A):
                 (by1 - by0 + 1900.0) / 25.0
         for e, k, w, h in sized:
             ww = w + CAP_W + VIEW_GAP
+            if len(row) == 1 and row[0][0] == "plan" and used_w + ww > lim_w:   # the first view beside the plan:
+                E = Elev(P, e)                                                 # a smaller scale rather than a
+                for k2 in [s_ for s_ in ELEV_SCALES if s_ > k]:                # plan alone on its sheet
+                    w2, h2 = _view_size(E, e, k2)
+                    if used_w + w2 + CAP_W + VIEW_GAP <= lim_w and h2 <= lim_h - 4.0:
+                        k, w, h, ww = k2, w2, h2, w2 + CAP_W + VIEW_GAP
+                        break
             if row and used_w + ww > lim_w:            # the row is full: the next row below
                 rows.append((row, row_h))
                 used_h += row_h + VIEW_GAP + 4.0
                 row, used_w, row_h = [], 0.0, 0.0
-            if rows and used_h + h > lim_h:            # no room for the row under the others: a new sheet
+            if rows and used_h + h > lim_h and any(it[0] != "plan" for r, _ in rows for it in r):   # a new sheet
                 pages.append(rows)
                 rows, used_h = [], 0.0
             row.append((e, k, w, h))

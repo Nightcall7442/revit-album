@@ -602,6 +602,12 @@ def legend(psp, x, y, items, title="Условные обозначения:", w
     return y
 
 
+def legend_height(items, title="Условные обозначения:", w2=72.0, rh=6.5):
+    """The height legend() takes (same wrapping)."""
+    hh = (HEAD_H + 5.0 if title else 0.0) + 1.0
+    return hh + sum(max(rh, wrap_count(lab, w2 - 2.0, 2.3) * 2.3 * 1.6 + 1.6) for _, lab in items)
+
+
 NOTE_H = 2.2
 
 

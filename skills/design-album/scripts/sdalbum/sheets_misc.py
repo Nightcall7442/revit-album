@@ -96,12 +96,14 @@ def cover_reference(A, no, title, scale):
     S.line(psp, (xl, 12.0), (xl, 284.0), "SD_Тонкие", (150, 150, 150), 13)
 
     def field(lab, val, y, hl=3.0, hv=3.0):
+        """Draw a field; return the y just under its (possibly wrapped) value."""
         if not val:
-            return
+            return y
         S.text(psp, lab, (xl - 4.0, y), hl, "TOP_RIGHT", "SD_Текст", rgb=(60, 60, 60))
         S.mtext(psp, val, (xl + 4.0, y), hv, 92.0, "SD_Текст", "TOP_LEFT", 1.2)
-    field("Проект", (m.get("project") or m.get("object") or "").strip(), 258.0, 4.2, 4.2)
-    field("Адрес", (m.get("place") or "").strip(), 247.0)
+        return y - S.wrap_count(val, 92.0, hv) * hv * 1.2 * 1.4
+    y_addr = min(247.0, field("Проект", (m.get("project") or m.get("object") or "").strip(), 258.0, 4.2, 4.2) - 3.0)
+    field("Адрес", (m.get("place") or "").strip(), y_addr)
     field("Заказчик", (m.get("client") or "").strip(), 105.0)
     field("Дизайнер", (m.get("designer") or "").strip(), 58.0)
     field("Проектировщик", (m.get("engineer") or m.get("designer_contact") or "").strip(), 46.0)

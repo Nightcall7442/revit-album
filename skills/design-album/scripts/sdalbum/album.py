@@ -74,6 +74,14 @@ class Column:
         for name, args, kw in pend:
             getattr(self, name)(*args, **kw)
 
+    def pending_height(self):
+        """Height of the legends held back for flush() (they go under the schedules)."""
+        hh = 0.0
+        for name, args, kw in self._pending:
+            if name == "legend":
+                hh += S.legend_height(args[0], kw.get("title"), self.w - 18.0, kw.get("rh", 6.0)) + GAP
+        return hh
+
     def legend(self, items, title="Условные обозначения:", rh=6.0):
         if self.defer:
             self._pending.append(("legend", (items,), dict(title=title, rh=rh)))
@@ -103,9 +111,12 @@ class Column:
         self._check()
 
     def table(self, widths, header, rows, title=None, h=1.6, aligns=None, total=None, head_h=5.5, zebra=False,
-              allow_band=True):
-        """A table in the column; when it does not fit, its lettering goes down to 1.9 mm before it moves on."""
-        keep = S.TABLE_MIN_H
+              allow_band=True, reserve=0.0):
+        """A table in the column; when it does not fit, its lettering goes down to 1.9 mm before it moves on.
+        `reserve` - height to keep free under it (the notes that follow); the table moves out sooner instead."""
+        keep, keep_b = S.TABLE_MIN_H, self.bottom
+        reserve += self.pending_height()
+        self.bottom += reserve
         try:
             sc = self.w / float(sum(widths))
             while S.TABLE_MIN_H > 1.9 + 1e-6 and self.y - S.table_height([w * sc for w in widths], header, rows, h, head_h,
@@ -114,6 +125,8 @@ class Column:
             return self._table(widths, header, rows, title, h, aligns, total, head_h, zebra, allow_band)
         finally:
             S.TABLE_MIN_H = keep
+            if self.bottom == keep_b + reserve:      # (still the same region: give the reserve back)
+                self.bottom = keep_b
 
     def _table(self, widths, header, rows, title=None, h=1.6, aligns=None, total=None, head_h=5.5, zebra=False,
                allow_band=True):
