@@ -15,7 +15,7 @@ from .model import fmt_area
 fmt_m = lambda v: ("%.2f" % v).replace(".", ",")
 SECTIONS = OrderedDict([("album", "1. Альбом"), ("items", "2. Мебель инд. изготовления"),
                         ("visuals", "3. Визуализации"), ("summary", "4. Сводная ведомость")])
-SUMMARY_KEYS = ("summary_finishes", "summary_doors", "summary_electric", "summary_glass")
+SUMMARY_KEYS = ("summary_finishes", "summary_doors", "summary_electric", "summary_moldings", "summary_glass")
 
 
 def _section(key):
@@ -29,9 +29,11 @@ def _section(key):
 
 
 def sheet_rows(A):
-    """[(section, «NN» or «NN–MM», name, scale)]: the elevations of a room in one line «Зал. Развёртки, виды 1–8»,
+    """Numbers as on the reference album: «0», «1», ... («%02d» when numbered from 1).
+    [(section, «NN» or «NN–MM», name, scale)]: the elevations of a room in one line «Зал. Развёртки, виды 1–8»,
     the sketches of the furniture in one line."""
     out = []
+    fm = "%d" if getattr(A, "base", 1) == 0 else "%02d"
     for n, k, t, s, fn, arg in A.sheets:
         sec = _section(k)
         if k == "elevations" and isinstance(arg, dict) and arg.get("group"):
@@ -39,7 +41,7 @@ def sheet_rows(A):
             labels = [e.get("label", "") for e in arg.get("elevs", [])]
             prev = out[-1] if out else None
             if prev and prev[4] == ("elev", g):
-                prev[1] = "%s–%02d" % (prev[1].split("–")[0], n)
+                prev[1] = "%s–" % prev[1].split("–")[0] + fm % n
                 prev[5] += labels
                 lab = prev[5]
                 prev[2] = "%s. %sразвёртки, виды %s–%s" % (g, "план, " if prev[6] else "", lab[0], lab[-1]) \
@@ -47,18 +49,18 @@ def sheet_rows(A):
                 if s and s not in prev[3]:
                     prev[3] = prev[3] + ", " + s
                 continue
-            out.append([sec, "%02d" % n, t, s or "—", ("elev", g), labels, "План" in t])
+            out.append([sec, fm % n, t, s or "—", ("elev", g), labels, "План" in t])
             continue
         if k == "items" and t.startswith("Мебель. "):
             prev = out[-1] if out else None
             if prev and prev[4] == ("items", None):
-                prev[1] = "%s–%02d" % (prev[1].split("–")[0], n)
+                prev[1] = "%s–" % prev[1].split("–")[0] + fm % n
                 prev[5].append(t.split(" — ")[0].replace("Мебель. ", ""))
                 prev[2] = "Эскизы изделий %s…%s" % (prev[5][0], prev[5][-1])
                 continue
-            out.append([sec, "%02d" % n, t, s or "—", ("items", None), [t.split(" — ")[0].replace("Мебель. ", "")], False])
+            out.append([sec, fm % n, t, s or "—", ("items", None), [t.split(" — ")[0].replace("Мебель. ", "")], False])
             continue
-        out.append([sec, "%02d" % n, t, s or "—", None, [], False])
+        out.append([sec, fm % n, t, s or "—", None, [], False])
     return [(r[0], r[1], r[2], r[3]) for r in out]
 
 
@@ -155,7 +157,7 @@ def _finish_tables(A):
                 prof.setdefault(it["mark"], it.get("profile"))
     rows = [[m, S.uo_line((150, 120, 80), 50), "Молдинг, профиль %s мм (по 3D-модели; артикул — по каталогу)" % prof[m],
              fmt_m(v), fmt_m(v * 1.1)] for m, v in sorted(ml.items())]
-    if rows:
+    if rows and A.sheet_no("summary_moldings") is None:        # else on its own sheet with the profiles
         out.append(("* Сводная ведомость молдингов", [12, 12, 108, 22, 22], ["Марка", "УО", "Наименование", "Длина, м.п.",
                                                                             "С запасом"], rows, ["C", "C", "L", "C", "C"],
                     ["", "", "Общий итог", fmt_m(sum(ml.values())), fmt_m(sum(ml.values()) * 1.1)]))

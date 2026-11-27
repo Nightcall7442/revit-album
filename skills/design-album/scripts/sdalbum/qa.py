@@ -339,7 +339,7 @@ def _s(s, n=40):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def check_doc(doc, layouts=None, unframed=("01", "02")):
+def check_doc(doc, layouts=None, unframed=("Титульный лист", "Обращение к заказчику")):
     report = {}
     for name in doc.layouts.names_in_taborder():
         if name == "Model":
@@ -347,7 +347,7 @@ def check_doc(doc, layouts=None, unframed=("01", "02")):
         if layouts and name not in layouts:
             continue
         lay = doc.layouts.get(name)
-        framed = not any(name.startswith(u + " ") for u in unframed)
+        framed = not any(name.split(" ", 1)[-1].startswith(u) for u in unframed)    # by title, not number
         issues, _ = check_layout(doc, lay, framed)
         report[name] = issues
     return report

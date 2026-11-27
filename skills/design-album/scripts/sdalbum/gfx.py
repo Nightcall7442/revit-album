@@ -513,10 +513,12 @@ def table_height(widths, header, rows, h=2.0, head_h=7.0, title=None, pad=1.2, t
     h = max(h, TABLE_MIN_H)
     head_h = max(head_h, h * 2.6)
     tot = head_h + (TITLE_ROW_H if title else 0.0) + (STAR_H if title and title.startswith("*") else 0.0)
-    for ri, r in enumerate(list(rows) + ([total] if total else [])):
+    all_rows = list(rows) + ([total] if total else [])
+    for ri, r in enumerate(all_rows):
         cells = r["cells"] if isinstance(r, dict) else r
         n = max([wrap_count(_cell_text(c), widths[i] - 2 * pad, h) for i, c in enumerate(cells)] + [1])
-        tot += fixed_row_height(row_h, h, n) if row_h else row_height(h, n)
+        is_total = total is not None and ri == len(all_rows) - 1
+        tot += fixed_row_height(row_h, h, n) if (row_h and not is_total) else row_height(h, n)
     return tot
 
 
@@ -549,11 +551,13 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
         lines_needed = 1
         for i, c in enumerate(cells):
             lines_needed = max(lines_needed, wrap_count(_cell_text(c), widths[i] - 2 * pad, h, bold))
-        rh = fixed_row_height(row_h, h, lines_needed) if row_h else row_height(h, lines_needed)
+        is_total = total is not None and ri == len(all_rows) - 1       # the total: a plain row under picture rows
+        rh = fixed_row_height(row_h, h, lines_needed) if (row_h and not is_total) else row_height(h, lines_needed)
         if out_rows is not None:
             out_rows.append((cy, rh))
         if isinstance(r, dict) and r.get("fill"):
             fill(psp, [(x, cy), (x + tw, cy), (x + tw, cy - rh), (x, cy - rh)], r["fill"], "SD_Таблицы")
+            line(psp, (x, cy), (x + tw, cy), "SD_Таблицы", rgb=(170, 170, 170))     # (the fill hid the line above)
         elif zebra and ri % 2 == 1:
             fill(psp, [(x, cy), (x + tw, cy), (x + tw, cy - rh), (x, cy - rh)], (247, 247, 248), "SD_Таблицы")
         for i, c in enumerate(cells):

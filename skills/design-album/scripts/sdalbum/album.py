@@ -26,6 +26,7 @@ HEALABLE = ("LINE_THROUGH_TEXT", "TEXT_ON_WALL", "TEXT_OVERLAP")
 
 SHEET_TITLES = {
     "cover": "Титульный лист", "letter": "Обращение к заказчику", "general": "Общие данные", "measured": "Обмерный план",
+    "sections": "Узлы и сечения", "summary_moldings": "Сводная ведомость молдингов",
     "partitions": "План монтажа перегородок", "furniture": "План расстановки мебели", "floors": "План полов",
     "ceilings": "План потолков", "lighting": "План освещения. Привязки",
     "lighting_marks": "План освещения. Маркировка", "lighting_schedule": "Ведомость светильников",
@@ -36,11 +37,11 @@ SHEET_TITLES = {
     "cornices": "План карнизов", "furniture_dims": "План мебели с размерами. Ведомость дверей",
     "el_fittings": "Ведомость электрофурнитуры", "el_outputs": "План электровыводов",
 }
-DEFAULT_ORDER = ["cover", "contents", "general", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
+DEFAULT_ORDER = ["cover", "contents", "general", "sections", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
                  "ceilings", "cornices", "furniture", "furniture_dims", "furniture_3d", "lighting_marks", "lighting_schedule",
                  "lighting", "switches", "sockets", "el_fittings", "el_outputs",
-                 "plumbing", "elev_key", "elevations", "openings", "windows", "items",
-                 "summary_finishes", "summary_doors", "summary_electric", "summary_glass"]   # order of the reference album
+                 "plumbing", "elev_key", "elevations", "openings", "windows", "items", "visuals",
+                 "summary_finishes", "summary_doors", "summary_electric", "summary_moldings", "summary_glass"]   # order of the reference album
 
 
 GAP = 5.0                                    # between the blocks of a column
@@ -303,7 +304,9 @@ class Album:
             "openings": (SD.openings_schedule, "1:%d" % SD.openings_k(P)),
             "windows": (SD.windows_sheet, "1:%d, 1:10" % SD.windows_k(P)),
         }
-        n = 0
+        # reference album: the title sheet is sheet 0, «Листов» - the number of the last sheet
+        self.base = 0 if (self.sheet_keys[:1] == ["cover"] and "contents" in self.sheet_keys) else 1
+        n = self.base - 1
         for key in self.sheet_keys:
             if key == "elevations":
                 for title, scale, fn, arg in SD.elevation_sheets(self):
@@ -315,6 +318,24 @@ class Album:
                 if SU.has_data(self, key):
                     n += 1
                     self.sheets.append((n, key, SU.TITLES[key], None, SU.summary_sheet, key))
+                continue
+            if key == "visuals":
+                from . import visuals as VI
+                for title, scale, fn, arg in VI.sheets(self):
+                    n += 1
+                    self.sheets.append((n, key, title, scale, fn, arg))
+                continue
+            if key == "summary_moldings":
+                from . import moldings as ML
+                if ML.has_data(self):
+                    n += 1
+                    self.sheets.append((n, key, SHEET_TITLES[key], None, ML.summary_sheet, None))
+                continue
+            if key == "sections":
+                from . import sheets_nodes as SN
+                if SN.has_data(self):
+                    n += 1
+                    self.sheets.append((n, key, SHEET_TITLES[key], "1:5, 1:%d" % SN.LEVELS_K, SN.nodes_sections, None))
                 continue
             if key == "contents":
                 from . import sheets_summary as SU
@@ -348,6 +369,7 @@ class Album:
                 ttl = "План розеток"
             self.sheets.append((n, key, ttl, scale, fn, None))
         self.total = n
+        self.count = n - self.base + 1
 
     def sheet_no(self, key):
         for no, k, *_ in self.sheets:

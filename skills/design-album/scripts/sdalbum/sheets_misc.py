@@ -248,7 +248,7 @@ def explanatory_items(A):
                   key=lambda x: x)
     out.append(("Состав проекта", "Альбом рабочих чертежей — %d листов (см. «Ведомость рабочих чертежей»): планы, "
                 "развёртки стен, 3D-виды, ведомости и сводные ведомости%s." % (
-                    A.total, ", мебель индивидуального изготовления" if A.sheet_no("items") else "")))
+                    A.count, ", мебель индивидуального изготовления" if A.sheet_no("items") else "")))
     if m.get("style"):
         out.append(("Стиль", m["style"]))
     return out
@@ -291,6 +291,8 @@ def explanatory_sheet(A, no, title, scale):
                  title="Экспликация помещений", head_h=5.0, total=["", "Общая площадь", fmt_area(tot)])
     pic = None
     rnd = (P.meta.get("renders") or [None])[0]
+    if isinstance(rnd, dict):
+        rnd = rnd.get("file")
     if rnd:
         pic = rnd if os.path.isabs(rnd) else os.path.join(P.base_dir, rnd)
         if not os.path.isfile(pic):
