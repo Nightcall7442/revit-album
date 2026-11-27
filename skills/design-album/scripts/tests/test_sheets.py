@@ -86,7 +86,7 @@ def test_node_callout_points_to_nodes_sheet(tmp_path):
     A, no, blk = _sheet(URGENCH, "ceilings", tmp_path)
     target = SP.node_sheet(A)
     assert target is not None
-    assert [t for _, _, t, *_ in A.sheets][target - 1] == "Узлы"
+    assert dict((n, t) for n, _, t, *_ in A.sheets)[target] == "Узлы"
     refs = [e.dxf.text for e, _ in _texts(blk) if e.rgb == (90, 90, 90)]
     assert refs and all(r == str(target) for r in refs)
 
