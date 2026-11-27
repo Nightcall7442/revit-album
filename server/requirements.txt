@@ -8,5 +8,6 @@ matplotlib==3.11.2
 pymupdf==1.28.2
 pillow==12.3.0
 contourpy==1.4.0
+scipy==1.18.1
 mathutils==5.1.0
 pytest

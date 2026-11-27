@@ -11,29 +11,56 @@ from . import model as M
 from .placer import Occ
 
 BRONZE = (168, 132, 82)
-COL_X = 303.0
+COL_X = 303.0                                # stamp B sheets: right column over the bottom strip
 COL_TOP = 258.0
-COL_BOTTOM = 36.0
-PLAN_AREA = (22.0, 40.0, 300.0, 262.0)      # x0, y0, x1, y1 on the sheet for plan viewports
+COL_BOTTOM = 5.0 + S.STAMP_B_H + 4.0
+PLAN_AREA = (22.0, 40.0, 300.0, 262.0)
+# stamp A sheets (plans): the right column of 90 mm holds tables, legend, notes and the title block at its foot
+COL_A_X = 415.2 - S.STAMP_A_W                 # tables run from line to line of the column (reference album)
+COL_A_W = S.STAMP_A_W
+COL_A_TOP = 292.0
+COL_A_BOTTOM = 5.0 + S.STAMP_A_H + 3.0
+PLAN_AREA_A = (24.0, 9.0, COL_A_X - 6.0, 277.0)   # x0, y0, x1, y1 on the sheet for plan viewports
 SCALES = (50, 75, 100)
 HEALABLE = ("LINE_THROUGH_TEXT", "TEXT_ON_WALL", "TEXT_OVERLAP")
 
 SHEET_TITLES = {
-    "cover": "Обложка", "letter": "Обращение к заказчику", "general": "Общие данные", "measured": "Обмерный план",
+    "cover": "Титульный лист", "letter": "Обращение к заказчику", "general": "Общие данные", "measured": "Обмерный план",
+    "sections": "Узлы и сечения", "summary_moldings": "Сводная ведомость молдингов",
     "partitions": "План монтажа перегородок", "furniture": "План расстановки мебели", "floors": "План полов",
-    "ceilings": "План потолков", "lighting": "План освещения", "sockets": "План розеток и электровыводов",
+    "ceilings": "План потолков", "lighting": "План освещения. Привязки",
+    "lighting_marks": "План освещения. Маркировка", "lighting_schedule": "Ведомость светильников",
+    "switches": "План выключателей и групп", "sockets": "План розеток и электровыводов",
     "plumbing": "План сантехники", "finishes": "План отделки стен", "openings": "Ведомость заполнения проёмов",
     "windows": "Окна и витражи", "items": "Мебель индивидуального изготовления",
+    "elev_key": "План обозначения развёрток", "contents": "Оглавление", "plinths": "План плинтусов", "heating": "План отопления",
+    "cornices": "План карнизов", "furniture_dims": "План мебели с размерами. Ведомость дверей",
+    "el_fittings": "Ведомость электрофурнитуры", "el_outputs": "План электровыводов",
 }
-DEFAULT_ORDER = ["cover", "letter", "general", "measured", "partitions", "furniture", "floors", "ceilings", "lighting",
-                 "sockets", "plumbing", "finishes", "elevations", "openings", "windows", "items"]
+DEFAULT_ORDER = ["cover", "contents", "general", "sections", "measured", "partitions", "finishes", "finishes_3d", "floors", "plinths", "heating",
+                 "ceilings", "cornices", "furniture", "furniture_dims", "furniture_3d", "lighting_marks", "lighting_schedule",
+                 "lighting", "switches", "sockets", "el_fittings", "el_outputs",
+                 "plumbing", "elev_key", "elevations", "openings", "windows", "items", "visuals",
+                 "summary_finishes", "summary_doors", "summary_electric", "summary_moldings", "summary_glass"]   # order of the reference album
+
+
+GAP = 5.0                                    # between the blocks of a column
 
 
 class Column:
     """Right-hand column of a plan sheet: stacks legend / tables / notes top-down and reports overflow."""
 
-    def __init__(self, album, psp, x=COL_X, top=COL_TOP, bottom=COL_BOTTOM, width=109.0, spill=None):
+    def __init__(self, album, psp, x=None, top=None, bottom=None, width=None, spill=None):
+        cx, ct, cb, cw = album.col_geom() if hasattr(album, "col_geom") else (COL_X, COL_TOP, COL_BOTTOM, 109.0)
+        x = cx if x is None else x
+        top = ct if top is None else top
+        bottom = cb if bottom is None else bottom
+        width = cw if width is None else width
         self.a, self.psp, self.x, self.y, self.bottom, self.w = album, psp, x, top, bottom, width
+        self._pending = []                       # legends wait for the schedules (column order of the reference)
+        self.defer = getattr(album, "cur_kind", "B") == "A"
+        if hasattr(album, "_cols"):
+            album._cols.append(self)
         # where the column continues when it is full: free space beside the plan viewport (x, top, width, bottom)
         self.spill = list(spill) if spill is not None else album.spill_regions()
 
@@ -42,27 +69,68 @@ class Column:
         while self.y - need_at(self.w) < self.bottom and self.spill:
             self.x, self.y, self.w, self.bottom = self.spill.pop(0)
 
-    def legend(self, items, title="Условные обозначения", rh=6.0):
+    def flush(self):
+        """Draw the legends held back: column order is schedules -> «Условные обозначения» -> «Примечание»."""
+        pend, self._pending, self.defer = self._pending, [], False
+        for name, args, kw in pend:
+            getattr(self, name)(*args, **kw)
+
+    def pending_height(self):
+        """Height of the legends held back for flush() (they go under the schedules)."""
+        hh = 0.0
+        for name, args, kw in self._pending:
+            if name == "legend":
+                hh += S.legend_height(args[0], kw.get("title"), self.w - 18.0, kw.get("rh", 6.0)) + GAP
+        return hh
+
+    def legend(self, items, title="Условные обозначения:", rh=6.0):
+        if self.defer:
+            self._pending.append(("legend", (items,), dict(title=title, rh=rh)))
+            return
         w1 = 18.0
-        self.y = S.legend(self.psp, self.x, self.y, items, title=title, w1=w1, w2=self.w - w1, rh=rh) - 9.0
+        self.y = S.legend(self.psp, self.x, self.y, items, title=title, w1=w1, w2=self.w - w1, rh=rh) - GAP
         self._check()
 
-    def legend_table(self, items, header, widths, title="Условные обозначения и спецификация", rh=5.2, h=1.45, aligns=None):
+    def legend_table(self, items, header, widths, title="Условные обозначения:", rh=6.0, h=2.0, aligns=None):
         """Legend + specification in one table: items = [(draw_fn | None, [cells...])]."""
+        if self.defer:
+            self._pending.append(("legend_table", (items, header, widths), dict(title=title, rh=rh, h=h, aligns=aligns)))
+            return
         sc = self.w / float(sum(widths))
         wc = [w * sc for w in widths]
         rows = [[""] + list(cells) for fn, cells in items]
         geo = []
+        if title and title.endswith(":"):      # a heading over the table, not its title row
+            self.y = S.heading(self.psp, self.x, self.y, title)
+            title = None
         bottom = S.table(self.psp, self.x, self.y, wc, header, rows, h=h, row_h=rh, head_h=5.5, aligns=aligns, title=title,
                          out_rows=geo)
         for (fn, _), (top, hh) in zip(items, geo):
             if fn is not None:
                 fn(self.psp, self.x + wc[0] / 2.0, top - hh / 2.0)
-        self.y = bottom - 9.0
+        self.y = bottom - GAP
         self._check()
 
     def table(self, widths, header, rows, title=None, h=1.6, aligns=None, total=None, head_h=5.5, zebra=False,
-              allow_band=True):
+              allow_band=True, reserve=0.0):
+        """A table in the column; when it does not fit, its lettering goes down to 1.9 mm before it moves on.
+        `reserve` - height to keep free under it (the notes that follow); the table moves out sooner instead."""
+        keep, keep_b = S.TABLE_MIN_H, self.bottom
+        reserve += self.pending_height()
+        self.bottom += reserve
+        try:
+            sc = self.w / float(sum(widths))
+            while S.TABLE_MIN_H > 1.9 + 1e-6 and self.y - S.table_height([w * sc for w in widths], header, rows, h, head_h,
+                                                                           title, total=total) < self.bottom:
+                S.TABLE_MIN_H = round(S.TABLE_MIN_H - 0.1, 2)
+            return self._table(widths, header, rows, title, h, aligns, total, head_h, zebra, allow_band)
+        finally:
+            S.TABLE_MIN_H = keep
+            if self.bottom == keep_b + reserve:      # (still the same region: give the reserve back)
+                self.bottom = keep_b
+
+    def _table(self, widths, header, rows, title=None, h=1.6, aligns=None, total=None, head_h=5.5, zebra=False,
+               allow_band=True):
         def need_at(wd):
             return S.table_height([w * wd / float(sum(widths)) for w in widths], header, rows, h, head_h, title, total=total)
         sc = self.w / float(sum(widths))
@@ -84,7 +152,7 @@ class Column:
                     total=total, head_h=head_h, zebra=zebra)
             return
         self.y = S.table(self.psp, self.x, self.y, widths_c, header, rows, h=h, aligns=aligns, title=title, total=total,
-                         head_h=head_h, zebra=zebra) - 9.0
+                         head_h=head_h, zebra=zebra) - GAP
         self._check()
 
     def _split_table(self, widths, header, rows, title, h, aligns, total, head_h, zebra):
@@ -112,7 +180,7 @@ class Column:
         for (x, y, w, bottom), part, ttl, tot in plan:
             sc = w / float(sum(widths))
             yb = S.table(self.psp, x, y, [c * sc for c in widths], header, part, h=h, aligns=aligns, title=ttl,
-                         total=tot, head_h=head_h, zebra=zebra) - 9.0
+                         total=tot, head_h=head_h, zebra=zebra) - GAP
         last = plan[-1][0]
         used = [r for r, *_ in plan]
         self.x, self.w, self.bottom = last[0], last[2], last[3]
@@ -121,18 +189,23 @@ class Column:
         self._check()
         return True
 
-    def notes(self, lines):
+    def notes(self, lines, title="Примечание:"):
+        self.flush()
         if not lines:
             return
 
+        hn = S.NOTE_H                        # a long note in a short column: smaller lettering first (down to 1.8)
+        while hn > 1.8 + 1e-6 and self.y - S.notes_height(lines, self.w - 1, hn) < self.bottom:
+            hn = round(hn - 0.1, 2)
+
         def need_at(wd):                     # the same wrapping S.notes does: the estimate is the drawing
-            return 2.0 + sum(S.wrap_count("%d. %s" % (i + 1, l), wd - 1, 2.1) for i, l in enumerate(lines)) * 2.1 * 1.667 * 1.3
+            return S.notes_height(lines, wd - 1, hn)
         self._fit(need_at)
-        m = S.notes(self.psp, self.x, self.y, lines, self.w - 1)
+        m = S.notes(self.psp, self.x, self.y, lines, self.w - 1, h=hn, title=title)
         self.y -= need_at(self.w) + 2.0
         self._check(gap=2.0)
 
-    def _check(self, gap=9.0):
+    def _check(self, gap=GAP):
         if self.y + gap < self.bottom - 0.5:     # (the gap left under the last block is not content)
             self.a.issues.append(dict(code="COLUMN_OVERFLOW", level="error", sheet=self.a.cur_title,
                                       msg="правая колонка не помещается (низ %.0f мм)" % self.y))
@@ -151,8 +224,14 @@ class Album:
         self.layouts = {}
         self.cur_title = ""
         meta = P.meta
+        import datetime
         self.info = dict(object=meta.get("object", "Дизайн-проект интерьера"), place=meta.get("place", ""),
-                         stage=meta.get("stage", "Дизайн-проект"), date="")
+                         stage=meta.get("stage", "Дизайн-проект"), date="", studio=meta.get("studio", ""),
+                         project=meta.get("project", ""), client=meta.get("client", ""),
+                         designer=meta.get("designer", ""), designer_contact=meta.get("designer_contact", ""),
+                         printed=meta.get("printed") or datetime.datetime.now().strftime("%d.%m.%Y %H:%M"))
+        self.cur_kind = "B"
+        self._cols = []
         logo = meta.get("logo") or os.path.join(S.ASSETS, "logo_w.png")
         if not os.path.isabs(logo):
             logo = os.path.join(P.base_dir, logo)
@@ -188,7 +267,7 @@ class Album:
             from . import dims as DM
             mr = max(mr, 450 + (DM.side_rows(self.P, "R") - 1) * 400 + 270)
             mt = max(mt, 450 + (DM.side_rows(self.P, "T") - 1) * 400 + 270)
-        ax0, ay0, ax1, ay1 = PLAN_AREA
+        ax0, ay0, ax1, ay1 = PLAN_AREA_A
         for k in SCALES:
             w = (x1 - x0) / k + (ml + mr) / 50.0
             h = (y1 - y0) / k + (mb + mt) / 50.0
@@ -207,22 +286,68 @@ class Album:
         from . import sheets_plans as SP
         from . import sheets_misc as SM
         from . import sheets_details as SD
+        from . import sheets_more as SX
+        from . import sheets_light as SL
         reg = {
             "cover": (SM.cover, None), "letter": (SM.letter, None), "general": (SM.general, None),
             "measured": (SP.measured, "1:%d" % self.plan_k), "partitions": (SP.partitions, "1:%d" % self.plan_k),
             "furniture": (SP.furniture, "1:%d" % self.plan_k), "floors": (SP.floors, "1:%d" % self.plan_k),
-            "ceilings": (SP.ceilings, "1:%d" % self.plan_k), "lighting": (SP.lighting, "1:%d" % self.plan_k),
+            "ceilings": (SP.ceilings, "1:%d" % self.plan_k), "lighting": (SP.lighting_bind, "1:%d" % self.plan_k),
+            "lighting_marks": (SL.lighting_marks, "1:%d" % self.plan_k), "lighting_schedule": (SL.lighting_schedule, None),
+            "switches": (SP.lighting_switch, "1:%d" % self.plan_k),
             "sockets": (SP.sockets, "1:%d" % self.plan_k), "plumbing": (SP.plumbing, "1:%d" % self.plan_k),
             "finishes": (SP.finishes, "1:%d" % self.plan_k),
+            "elev_key": (SP.elev_key, "1:%d" % self.plan_k),
+            "plinths": (SX.plinths, "1:%d" % self.plan_k), "heating": (SX.heating, "1:%d" % self.plan_k),
+            "cornices": (SX.cornices, "1:%d" % self.plan_k), "furniture_dims": (SX.furniture_dims, "1:%d" % self.plan_k),
+            "el_fittings": (SX.el_fittings, None), "el_outputs": (SX.el_outputs, "1:%d" % self.plan_k),
             "openings": (SD.openings_schedule, "1:%d" % SD.openings_k(P)),
             "windows": (SD.windows_sheet, "1:%d, 1:10" % SD.windows_k(P)),
         }
-        n = 0
+        # reference album: the title sheet is sheet 0, «Листов» - the number of the last sheet
+        self.base = 0 if (self.sheet_keys[:1] == ["cover"] and "contents" in self.sheet_keys) else 1
+        n = self.base - 1
         for key in self.sheet_keys:
             if key == "elevations":
                 for title, scale, fn, arg in SD.elevation_sheets(self):
                     n += 1
                     self.sheets.append((n, key, title, scale, fn, arg))
+                continue
+            if key in ("summary_finishes", "summary_doors", "summary_electric", "summary_glass"):
+                from . import sheets_summary as SU
+                if SU.has_data(self, key):
+                    n += 1
+                    self.sheets.append((n, key, SU.TITLES[key], None, SU.summary_sheet, key))
+                continue
+            if key == "visuals":
+                from . import visuals as VI
+                for title, scale, fn, arg in VI.sheets(self):
+                    n += 1
+                    self.sheets.append((n, key, title, scale, fn, arg))
+                continue
+            if key == "summary_moldings":
+                from . import moldings as ML
+                if ML.has_data(self):
+                    n += 1
+                    self.sheets.append((n, key, SHEET_TITLES[key], None, ML.summary_sheet, None))
+                continue
+            if key == "sections":
+                from . import sheets_nodes as SN
+                if SN.has_data(self):
+                    n += 1
+                    self.sheets.append((n, key, SHEET_TITLES[key], "1:5, 1:%d" % SN.LEVELS_K, SN.nodes_sections, None))
+                continue
+            if key == "contents":
+                from . import sheets_summary as SU
+                n += 1
+                self.sheets.append((n, key, SHEET_TITLES[key], None, SU.contents, None))
+                continue
+            if key in ("finishes_3d", "furniture_3d"):
+                from . import sheets_3d as S3
+                if S3.has_data(self, key):
+                    for title, scale, fn, arg in S3.sheets(self, key):
+                        n += 1
+                        self.sheets.append((n, key, title, scale, fn, arg))
                 continue
             if key == "items":
                 from . import sheets_items as SI
@@ -232,12 +357,19 @@ class Album:
                 continue
             if key not in reg:
                 continue
-            if not SP.has_data(self, key) or not SM.has_data(self, key):
+            if not SP.has_data(self, key) or not SM.has_data(self, key) or not SX.has_data(self, key):
                 continue
             fn, scale = reg[key]
             n += 1
-            self.sheets.append((n, key, SHEET_TITLES[key], scale, fn, None))
+            ttl = SHEET_TITLES[key]
+            if key == "general" and "contents" in self.sheet_keys:     # reference album: the explanatory note
+                ttl = "Пояснительная записка"
+                fn = SM.explanatory_sheet
+            if key == "sockets" and "el_outputs" in self.sheet_keys and SX.has_data(self, "el_outputs"):
+                ttl = "План розеток"
+            self.sheets.append((n, key, ttl, scale, fn, None))
         self.total = n
+        self.count = n - self.base + 1
 
     def sheet_no(self, key):
         for no, k, *_ in self.sheets:
@@ -246,31 +378,36 @@ class Album:
         return None
 
     # ------------------------------------------------------------------ scaffolding
-    def make_sheet(self, no, title, scale, subtitle=None, header=True, stamp=True):
+    def col_geom(self):
+        """(x, top, bottom, width) of the right column of the current sheet."""
+        if self.cur_kind == "A":
+            return COL_A_X, COL_A_TOP, COL_A_BOTTOM, COL_A_W
+        return COL_X, COL_TOP, COL_BOTTOM, 109.0
+
+    def make_sheet(self, no, title, scale, subtitle=None, header=True, stamp=True, kind="B"):
+        """kind «A» - the title block heads the right column (plans); «B» - a strip along the bottom (sheets whose
+        drawings take the whole width)."""
         self.cur_title = "%02d %s" % (no, title)
+        self.cur_kind = kind
         self._band_used = 1e9                   # the band under a plan exists on plan sheets only (plan_sheet)
         name = self.cur_title.replace(".", "").replace(":", "")[:60]
         psp = self.doc.layouts.new(name)
         psp.page_setup(size=(420, 297), margins=(0, 0, 0, 0), units="mm")
+        right = (COL_A_X - 4.0) if kind == "A" else 412.0
         if getattr(self, "warning", None):     # not checked against the scene: every sheet says so (L-100)
-            S.text(psp, self.warning, (412.0, 291.0), 2.6, "TOP_RIGHT", "SD_Штамп", bold=True, rgb=(190, 30, 40))
+            S.text(psp, self.warning, (right, 290.0), 2.5, "TOP_RIGHT", "SD_Штамп", rgb=(190, 30, 40))
         if stamp:
-            S.frame(psp)
-            S.stamp(psp, self.logo_def, no, self.total, title, scale, self.info)
+            S.frame(psp, self.info)
+            (S.stamp_a if kind == "A" else S.stamp_b)(psp, self.logo_def, no, self.total, title, scale, self.info)
         if header:
-            S.text(psp, "%02d" % no, (26, 268.5), 10.0, "BOTTOM_LEFT", "SD_Текст", bold=True, rgb=BRONZE)
-            ttl = title
-            h = 5.6
-            while S.tw(ttl, h, True) > 360 and h > 4.0:
-                h -= 0.2
-            S.text(psp, ttl, (47, 274.0), h, "BOTTOM_LEFT", "SD_Текст", bold=True)
-            if subtitle:
-                hs = 2.5
-                while S.tw(subtitle, hs) > 362 and hs > 1.8:
-                    hs -= 0.1
-                S.text(psp, subtitle, (47, 268.6), hs, "BOTTOM_LEFT", "SD_Текст", rgb=(115, 115, 115))
-            S.line(psp, (26, 265), (412, 265), "SD_Тонкие", (200, 200, 200), 13)
-            S.line(psp, (26, 265), (44, 265), "SD_Тонкие", BRONZE, 50)
+            if kind == "A":
+                S.view_title(psp, 26.0, 284.5, title, scale)
+            else:
+                S.view_title(psp, 26.0, 282.0, title, None)
+                if subtitle:
+                    x = 26.0 + S.tw(title, 3.5) + 6.0
+                    sub, hs = S._fit_text(subtitle, 2.5, 410.0 - x)
+                    S.text(psp, sub, (x, 282.0), hs, "BOTTOM_LEFT", "SD_Текст", rgb=(110, 110, 110))
         self.layouts[no] = psp
         return psp
 
@@ -299,14 +436,15 @@ class Album:
         if not vps:
             return []
         r = vps[0][3]
+        cx, ct, cb, _ = self.col_geom()
         x = r[2] + 8.0
-        w = COL_X - 8.0 - x
-        return [(x, COL_TOP, w, COL_BOTTOM)] if w >= 80.0 else []
+        w = cx - 8.0 - x
+        return [(x, ct, w, cb if self.cur_kind == "B" else 9.0)] if w >= 80.0 else []
 
     def band_free(self, need):
         """Free band under the plan viewport, left of the title block."""
         top = self.plan_xy[1] - 3.0 - self._band_used
-        return top - need >= 36.0 and self._band_used == 0.0
+        return top - need >= (9.0 if self.cur_kind == "A" else 36.0) and self._band_used == 0.0
 
     def take_band(self, need):
         top = self.plan_xy[1] - 3.0
@@ -314,7 +452,7 @@ class Album:
         return 24.0, top - (5.0 if True else 0.0), 158.0
 
     def plan_sheet(self, no, title, scale, subtitle):
-        psp = self.make_sheet(no, title, scale, subtitle)
+        psp = self.make_sheet(no, title, scale, subtitle, kind="A")
         self._band_used = 0.0
         blk, off = self.model_block(no)
         self.vp(psp, off, self.plan_win, self.plan_xy, self.plan_k)
@@ -356,6 +494,9 @@ class Album:
                 fn(self, no, title, scale)
             else:
                 fn(self, no, title, scale, arg)
+            for c in self._cols:                 # a column without notes still shows its legend
+                c.flush()
+            self._cols = []
             placer.flush_all()
         finally:
             placer.HINTS = {}
@@ -425,7 +566,7 @@ class Album:
                 for off, win, t, rect, k in vps:
                     if rect[0] <= m.x <= rect[2] and rect[1] <= m.y <= rect[3]:
                         loc = LineString([(win[0] + (x - rect[0]) * k, win[1] + (y - rect[1]) * k) for x, y in cs])
-                        out.setdefault(off, []).append(loc.buffer(0.3 * k))
+                        out.setdefault(off, []).append(loc.buffer(1.2 * k))   # wide: the text moves off the line, not along it
                         break
         return out
 

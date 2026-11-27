@@ -21,9 +21,15 @@
 | `studio`, `stage`, `year`, `country`, `tagline` | | обложка, штамп |
 | `album`, `cover_footer` | | обложка |
 | `letter` (список абзацев), `letter_title`, `signature` | | лист «Обращение к заказчику» |
+| `client`, `designer`, `engineer`, `city` | `"Иванов И. И."` | титул (поля Заказчик / Дизайнер / Проектировщик, город); пустые не выводятся |
+| `cover_style` | `"studio"` | титул студии (шестиугольники); по умолчанию — титул эталона с аксонометрией |
+| `printed` | `"24.11.2026 20:15"` | дата печати под рамкой (по умолчанию — время сборки) |
 | `logo`, `logo_transparent` | путь к PNG (относительно project.json) | штамп / обложка; по умолчанию логотип Space Design Studio |
 | `code` | `"КВ-2026-АР"` | номер проекта в Revit |
 | `questions` | `["Д-4: подтвердить проём…"]` | «Вопросы к заказчику» на листе «Общие данные» (+ конфликты из проверки данных) |
+
+- `renders`: картинки визуализаций — пути (от project.json) или `{"file": "...", "room": "Гостиная"}`;
+  `renders_dir`: папка с визуализациями (помещение — по имени в имени файла). Дают раздел «3. Визуализации».
 
 ## levels
 `{"floor": 0, "ceiling": 2800, "slab": 3200}` — чистый пол, низ основного потолка, низ плиты.
@@ -64,8 +70,8 @@
 
 ## rooms
 ```json
-{"num": "1", "name": "Прихожая", "seed": [4830, 4900], "cls": "circulation", "ceiling_type": "Т1",
- "ceiling_level": 2800, "wall_finish": "О2", "wall_split": {"О2": 14.57, "О1": 3.91}, "label": "Санузел|совм."}
+{"num": "1", "name": "Прихожая", "seed": [4830, 4900], "cls": "circulation", "ceiling_type": "ПО-1",
+ "ceiling_level": 2800, "wall_finish": "ПЛ-1", "wall_split": {"ПЛ-1": 14.57, "КР-1": 3.91}, "label": "Санузел|совм."}
 ```
 - Контур помещения вычисляется: внутренность здания минус стены, разрезанная `separations`; `seed` — любая точка внутри. Можно задать `poly` вручную.
 - `cls`: `living` | `kitchen` | `wet` | `circulation` (цвет схемы, гидроизоляция, отделка, развёртки санузлов).
@@ -100,19 +106,19 @@ kinds: Р, Р2, РВ (IP44), Р32, ТВ, LAN, КОНД, БРА, ВЫВ. `panel`:
 
 ## floors
 ```json
-{"id": "П1", "material": "Паркетная доска…", "pattern": "plank|tile", "plank": [1300, 160], "along": "y",
- "origin": [200, 200], "tile": [600, 600], "rooms": ["Спальня"], "polys": [[[x,y],…]], "layers": "состав пола",
+{"id": "НП-1", "material": "Паркетная доска…", "pattern": "plank|tile", "plank": [1300, 160], "along": "y",
+ "origin": [200, 200], "tile": [600, 600], "rooms": ["Спальня"], "polys": [[[x,y],…]], "layers": "Паркетная доска 14 мм; подложка 3 мм; стяжка 50 мм",
  "reserve": 0.1}
 ```
 `polys` (необязательно) обрезаются по помещениям и дверным проёмам.
 
 ## ceilings
-`types`: `[{"id": "Т1", "short": "…", "desc": "…", "level": 2800, "kind": "bulkhead", "level_text": "+2,400"}]`;
+`types`: `[{"id": "ПО-1", "short": "…", "desc": "…", "level": 2800, "kind": "bulkhead", "level_text": "+2,400"}]`;
 `zones`: `[{"type": "Т2", "kind": "bulkhead|niche|cove", "name": "…", "poly": [[x,y],…], "bottom": 2400,
 "overhead": true}]` — `overhead` показывает короб пунктиром на планах этажа.
 
 ## finishes
-`types`: `[{"id": "О1", "desc": "…", "rgb": [r,g,b]}]`, `by_class`: `{"wet": "О2"}`,
+`types`: `[{"id": "КР-1", "desc": "…", "rgb": [r,g,b]}]`, `by_class`: `{"wet": "ПЛ-1"}`,
 `segments`: `[{"type": "О3", "a": [x,y], "b": [x,y]}]` — участки (фартук).
 
 ## elevations (развёртки)
@@ -147,3 +153,13 @@ kinds: Р, Р2, РВ (IP44), Р32, ТВ, LAN, КОНД, БРА, ВЫВ. `panel`:
   `furn_mark` {"Имя@cx,cy": [x,y]}.
 - `sheets`: порядок / состав листов (ключи: cover, letter, general, measured, partitions, furniture, floors,
   ceilings, lighting, sockets, plumbing, finishes, elevations, openings).
+
+### `plinths` (план плинтусов)
+`{"types": [{"id": "П-1", "desc": "Плинтус МДФ 80×16 мм…", "h": 80, "rgb": [r,g,b]}], "rooms": {"Гостиная": "П-1"}}` —
+помещения с плинтусом и его марка; мокрые зоны по умолчанию без плинтуса (агент предлагает сам, `proposed`).
+
+### `heating` (план отопления)
+`{"radiators": [{"id", "mark": "Р-1", "rect": [x0,y0,x1,y1], "w", "h", "bottom", "room", "n"}],
+"floors": [{"room", "poly", "area", "power"}], "thermostats": [{"id", "x", "y", "h": 900, "room", "where", "n"}],
+"types": [{"id": "Р-1", "desc", "w", "h"}]}` — радиаторы под окнами (≈3/4 ширины окна, низ +0,120), электрический
+тёплый пол в мокрых зонах, терморегулятор снаружи у двери; предлагается агентом по нормам.

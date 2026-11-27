@@ -401,8 +401,8 @@ def render_models(P, out_png, d=None, elev=40.0, azim=-58.0, width=1900, cut=CUT
         tr, cols, _ = m.tris(props=True, colour=True)
         if not len(tr):
             continue
-        if len(tr) > 60000:                     # thin dense meshes for the overview
-            sel = np.linspace(0, len(tr) - 1, 60000).astype(int)
+        if len(tr) > 400000:                    # thin only huge meshes (thinned chairs came out see-through)
+            sel = np.linspace(0, len(tr) - 1, 400000).astype(int)
             tr, cols = tr[sel], cols[sel]
         for pl in it["places"]:
             x, y = pl[0], pl[1]

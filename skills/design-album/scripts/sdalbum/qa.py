@@ -22,7 +22,17 @@ from shapely.strtree import STRtree
 from ezdxf.addons.drawing import Frontend, RenderContext, config as dcfg
 from ezdxf.addons.drawing.backend import BackendInterface
 
-STAMP = (185.0, 5.0, 415.0, 31.0)
+STAMP = (20.0, 5.0, 415.0, 20.0)                 # stamp B: the strip along the whole bottom
+STAMP_A = (325.0, 5.0, 415.0, 65.0)              # stamp A: the foot of the right column (plan sheets)
+
+
+def stamp_box(layout):
+    """Title block region of a sheet: stamp A when the sheet has the column line of the frame layer."""
+    for e in layout.query("LINE[layer=='SD_Рамка']"):
+        a, b = e.dxf.start, e.dxf.end
+        if abs(a.x - b.x) < 0.01 and abs(a.x - STAMP_A[0]) < 0.8:
+            return STAMP_A
+    return STAMP
 FRAME = (20.0, 5.0, 415.0, 292.0)
 
 
@@ -97,12 +107,17 @@ class Recorder(BackendInterface):
             for p in paths:
                 self._glyph(p)
             return
+        g = None                         # the boundary paths of one fill, odd parity: holes (rooms in a wall fill) stay out
         for p in paths:
             pts = [(v.x, v.y) for v in p.flattening(0.1)]
             if len(pts) >= 3:
                 poly = Polygon(pts).buffer(0)
                 if not poly.is_empty:
-                    self.fills.append((poly, properties.color, properties.layer, properties.handle, self._o()))
+                    g = poly if g is None else g.symmetric_difference(poly)
+        if g is not None and not g.is_empty:
+            for part in getattr(g, "geoms", [g]):
+                if part.geom_type == "Polygon" and not part.is_empty:
+                    self.fills.append((part, properties.color, properties.layer, properties.handle, self._o()))
 
     def draw_filled_polygon(self, points, properties):
         if self.cur:
@@ -234,7 +249,7 @@ def check_layout(doc, layout, framed=True):
         for code, msg in typo.issues(t["content"]):
             issues.append(dict(code=code, level="error", where=_c(t["bbox"]), msg="«%s»: %s" % (_s(t["content"]), msg)))
     if framed:
-        st = box(*STAMP)
+        st = box(*stamp_box(layout))
         fr = box(*FRAME)
         for t in texts:
             if t["layer"] in ("SD_Штамп",):
@@ -324,7 +339,7 @@ def _s(s, n=40):
     return s if len(s) <= n else s[:n - 1] + "…"
 
 
-def check_doc(doc, layouts=None, unframed=("01", "02")):
+def check_doc(doc, layouts=None, unframed=("Титульный лист", "Обращение к заказчику")):
     report = {}
     for name in doc.layouts.names_in_taborder():
         if name == "Model":
@@ -332,7 +347,7 @@ def check_doc(doc, layouts=None, unframed=("01", "02")):
         if layouts and name not in layouts:
             continue
         lay = doc.layouts.get(name)
-        framed = not any(name.startswith(u + " ") for u in unframed)
+        framed = not any(name.split(" ", 1)[-1].startswith(u) for u in unframed)    # by title, not number
         issues, _ = check_layout(doc, lay, framed)
         report[name] = issues
     return report

@@ -31,9 +31,11 @@ from shapely.geometry import LineString, Point, Polygon, box
 from shapely.ops import unary_union
 
 from . import model as M
+from . import marks as MK
 from . import topo as T
 
-SECTIONS = ("floors", "ceilings", "finishes", "plumbing", "lighting", "switches", "sockets", "panel", "circuits", "elevations")
+SECTIONS = ("floors", "ceilings", "finishes", "plumbing", "lighting", "switches", "sockets", "panel", "circuits", "elevations",
+            "plinths", "heating")
 LUX = {"living": 150, "kitchen": 150, "wet": 50, "circulation": 50, "storage": 75, "public": 200, "bar": 200}
 FLUX, ETA, KZ = 500.0, 0.45, 1.25
 MIN_SPOTS = {"living": 4, "kitchen": 4, "wet": 2, "circulation": 2, "storage": 1, "public": 6, "bar": 3}
@@ -80,6 +82,10 @@ def propose(data, base_dir=".", sections=None):
     P = M.Project(d, base_dir)
     if "elevations" in want and not d.get("elevations"):
         _elevations(d, P, log)
+    if "plinths" in want and not d.get("plinths"):
+        _plinths(d, P, log)
+    if "heating" in want and not d.get("heating"):
+        _heating(d, P, log)
     if log:                                  # a statement in the general notes, not a question to the client
         txt = "По нормам как проектное предложение выполнены (отмечены на листах): %s." % (
             ", ".join(sorted(set(e["section"] for e in log))))
@@ -186,13 +192,13 @@ def _floors(d, P, log):
     out = []
     if by["plank"]:
         along = _plank_direction(P, by["plank"])
-        out.append(dict(id="П1", material="Ламинат 33 класс, планка 1380×193", pattern="plank", plank=[1380, 193], along=along,
+        out.append(dict(id=MK.floor_id(out, "ламинат", "plank"), material="Ламинат 33 класс, планка 1380×193", pattern="plank", plank=[1380, 193], along=along,
                         rooms=by["plank"], layers="Ламинат 8 мм; подложка 3 мм; стяжка", reserve=0.1, proposed=True))
     if by["tile"]:
-        out.append(dict(id="П%d" % (len(out) + 1), material="Керамогранит 600×600", pattern="tile", tile=[600, 600],
+        out.append(dict(id=MK.floor_id(out, "керамогранит", "tile"), material="Керамогранит 600×600", pattern="tile", tile=[600, 600],
                         rooms=by["tile"], layers="Керамогранит 10 мм; плиточный клей; стяжка", reserve=0.1, proposed=True))
     if by["wet"]:
-        out.append(dict(id="П%d" % (len(out) + 1), material="Керамогранит 600×600 (санузлы)", pattern="tile", tile=[600, 600],
+        out.append(dict(id=MK.floor_id(out, "керамогранит", "tile"), material="Керамогранит 600×600 (санузлы)", pattern="tile", tile=[600, 600],
                         rooms=by["wet"], layers="Керамогранит 10 мм; плиточный клей; обмазочная гидроизоляция с заведением на стены 200 мм; стяжка",
                         reserve=0.1, proposed=True))
     d["floors"] = out
@@ -218,7 +224,7 @@ def _floors_public(d, P, log):
         if not rooms:
             continue
         used.update(rooms)
-        out.append(dict(id="П%d" % (len(out) + 1), material=mat, pattern="tile", tile=tile, rooms=rooms, layers=layers,
+        out.append(dict(id=MK.floor_id(out, mat, "tile"), material=mat, pattern="tile", tile=tile, rooms=rooms, layers=layers,
                         reserve=0.1, proposed=True))
     d["floors"] = out
     _note(d, "floors", "Покрытия - проектное предложение для общественного интерьера: износостойкий керамогранит, "
@@ -242,25 +248,26 @@ def _plank_direction(P, names):
 def _ceilings(d, P, log):
     lvl = P.ceiling
     lt = ("+%.3f" % (lvl / 1000.0)).replace(".", ",")
-    types = [dict(id="Т1", short="потолок ГКЛ, окраска, %s" % lt, desc="ГКЛ 12,5 мм по металлокаркасу, шпатлёвка, окраска", level=lvl,
+    t1, t2 = "ПО-1", "ПО-2"
+    types = [dict(id=t1, short="потолок ГКЛ, окраска, %s" % lt, desc="ГКЛ 12,5 мм по металлокаркасу, шпатлёвка, окраска", level=lvl,
                   proposed=True)]
     wet = [r for r in d["rooms"] if P.room_by_name[r["name"]].get("cls") == "wet"]
     if wet:
-        types.append(dict(id="Т2", short="потолок ГКЛВ, влагостойкая окраска, %s" % lt,
+        types.append(dict(id=t2, short="потолок ГКЛВ, влагостойкая окраска, %s" % lt,
                           desc="ГКЛВ 12,5 мм по металлокаркасу, шпатлёвка, влагостойкая окраска", level=lvl, proposed=True))
     for r in d["rooms"]:
-        r.setdefault("ceiling_type", "Т2" if wet and P.room_by_name[r["name"]].get("cls") == "wet" else "Т1")
+        r.setdefault("ceiling_type", t2 if wet and P.room_by_name[r["name"]].get("cls") == "wet" else t1)
     d.setdefault("ceilings", {})["types"] = types
     d["ceilings"].setdefault("zones", [])
-    L(log, "потолки", "потолки: Т1 ГКЛ%s на отм. %s" % (", Т2 ГКЛВ в санузлах" if wet else "", lt), len(types))
+    L(log, "потолки", "потолки: %s ГКЛ%s на отм. %s" % (t1, (", %s ГКЛВ в санузлах" % t2) if wet else "", lt), len(types))
 
 
 def _finishes(d, P, log):
-    types = [dict(id="О1", desc="Окраска интерьерной матовой краской по подготовленной поверхности", rgb=[205, 205, 210], proposed=True)]
+    types = [dict(id="КР-1", desc="Окраска интерьерной матовой краской по подготовленной поверхности", rgb=[205, 205, 210], proposed=True)]
     by_class = {}
     if any(r.get("cls") == "wet" for r in P.rooms):
-        types.append(dict(id="О2", desc="Керамическая плитка / керамогранит на всю высоту (санузлы)", rgb=[60, 130, 200], proposed=True))
-        by_class["wet"] = "О2"
+        types.append(dict(id="ПЛ-1", desc="Керамическая плитка / керамогранит на всю высоту (санузлы)", rgb=[60, 130, 200], proposed=True))
+        by_class["wet"] = "ПЛ-1"
     if _public(d):
         types[0]["desc"] = "Окраска износостойкой моющейся краской (класс 1-2 по мокрому истиранию), цвет по дизайну"
     segs = []
@@ -1431,6 +1438,16 @@ def _elevations(d, P, log):
               len(out) - n0)
     except Exception as ex:                       # the album is built without them, the report says why
         L(log, "развёртки", "развёртки стен зала не построены: %r" % (ex,))
+    try:
+        n0 = len(out)
+        out = _all_walls(d, P, out)
+        if len(out) > n0:
+            L(log, "развёртки", "развёртки всех стен помещений: ещё %d стен (объекты сцены у стен - по 3D-модели)" % (len(out) - n0),
+              len(out) - n0)
+    except Exception as ex:
+        L(log, "развёртки", "развёртки всех стен не построены: %r" % (ex,))
+    for i, e in enumerate(out, 1):                # views numbered through the album (plan of the elevations)
+        e["label"] = str(i)
     if out:
         d["elevations"] = out
         _note(d, "elevations", "Развёртки - проектное предложение: раскладка плитки и высоты приборов уточняются по выбранной "
@@ -1486,6 +1503,62 @@ def _silhouette(m, place, z0, E, px=12.0):
         best = max(best.geoms, key=lambda q: q.area)
     best = best.simplify(8)
     return [[_r(x), _r(max(0.0, y))] for x, y in list(best.exterior.coords)[:-1]]
+
+
+SCENE_ON_FITTED = ("molding", "curtain", "mirror", "light", "art", "radiator", "tv")
+
+
+def _all_walls(d, P, out):
+    """Every wall of every room gets an elevation (the reference album: «развёртки всех стен»), in room order, each
+    with the objects of the 3D scene standing at it (mouldings, panels, cabinets, curtains, wall lights). Walls that
+    already have an elevation (wet rooms, kitchen, feature walls) keep it and get the scene objects not drawn yet."""
+    from . import elev_scene as ES
+    from .sheets_details import Elev
+    if ((d.get("meta") or {}).get("elevations") or "all") != "all":
+        return out
+    have_scene = bool(ES.load(P))
+    for e in out:                                  # elevations made above: + what the scene hangs on them
+        room = P.room_by_name.get(e.get("room"))
+        if room is None or not have_scene:
+            continue
+        E = Elev(P, e)
+        sc = ES.items(P, E, room["shp"], int(e.get("height") or P.ceiling))
+        if e.get("fixtures") or any(it.get("type") not in ("poly", "panel") for it in e.get("items", [])):
+            sc = [it for it in sc if it["cat"] in SCENE_ON_FITTED]
+        else:                                      # the box outlines of the model give way to the real silhouettes
+            e["items"] = [it for it in e.get("items", []) if it.get("type") not in ("poly", "wall_light")]
+        e.setdefault("items", []).extend(sc)
+    done = [(tuple(e["a"]), tuple(e["b"])) for e in out]
+
+    def seen(a, b):
+        return any(math.hypot(a[0] - x[0], a[1] - x[1]) < 60 and math.hypot(b[0] - y[0], b[1] - y[1]) < 60 for x, y in done)
+    F = P.finishes or {}
+    for room in sorted(P.rooms, key=lambda r: int(r["num"]) if str(r.get("num", "")).isdigit() else 999):
+        H = int(room.get("ceiling_level") or P.ceiling)
+        for a, b in _faces_cw(room):
+            if math.hypot(b[0] - a[0], b[1] - a[1]) < 300 or seen(a, b):
+                continue
+            typ = room.get("wall_finish") or F.get("by_class", {}).get(room.get("cls")) or \
+                ((F.get("types") or [{}])[0].get("id"))
+            L_ = math.hypot(b[0] - a[0], b[1] - a[1])
+            e = dict(group=room["name"], room=room["name"], a=[_r(a[0]), _r(a[1])], b=[_r(b[0]), _r(b[1])], height=H,
+                     base="paint", zones=[dict(s0=0, s1=_r(L_), z0=0, z1=H, mat="paint")], items=[], fixtures=[],
+                     proposed=True, finish=typ)
+            if have_scene:
+                E_ = Elev(P, e)
+                e["items"] = ES.items(P, E_, room["shp"], H)
+                xs, zs = ES.dims_of(e["items"], E_.L, H)
+                if xs:
+                    e["extra_s"] = xs
+                if zs:
+                    e["extra_heights"] = zs
+            out.append(e)
+    if have_scene:
+        ES.assign_molding_marks(out)
+    # elevations in room order, the walls of a room clockwise from its entrance side as generated
+    order = {r["name"]: i for i, r in enumerate(sorted(P.rooms, key=lambda r: int(r["num"]) if str(r.get("num", "")).isdigit() else 999))}
+    out.sort(key=lambda e: order.get(e.get("room"), 999))
+    return out
 
 
 def _feature_walls(d, P):
@@ -1599,3 +1672,96 @@ def _feature_walls(d, P):
             e["label"] = next(letters)
             out.append(e)
     return out
+
+
+# ------------------------------------------------------------------ plinths, heating (reference album: own plans)
+DRY_NO_PLINTH = ("wet",)
+
+
+def _plinths(d, P, log):
+    """Plinth П-1 along every dry room with a floor covering (tiled wet rooms: the wall tile meets the floor)."""
+    rooms = {}
+    for r in P.rooms:
+        if r.get("cls") in DRY_NO_PLINTH or not P.floor_of_room(r["name"]):
+            continue
+        rooms[r["name"]] = "П-1"
+    if not rooms:
+        return
+    d["plinths"] = dict(types=[dict(id="П-1", desc="Плинтус МДФ 80×16 мм под покраску, в цвет стен; крепление - клей "
+                                                   "+ скрытый крепёж", h=80, rgb=[150, 110, 70], proposed=True)],
+                        rooms=rooms)
+    _note(d, "plinths", "Плинтусы - проектное предложение: профиль и цвет согласовать с дизайнером.")
+    L(log, "плинтусы", "плинтус П-1 в %d помещениях (кроме мокрых зон)" % len(rooms), len(rooms))
+
+
+HEATED = ("living", "kitchen", "bedroom", "public", "hall", None)
+
+
+def _heating(d, P, log):
+    """Radiators under the windows of living rooms (width about 3/4 of the window, SP 60.13330), electric floor heating
+    with a thermostat in the wet rooms (outside, by the door, h 900)."""
+    rads, floors_, stats = [], [], []
+    types = {}
+    for r in P.rooms:
+        if r.get("cls") not in HEATED:
+            continue
+        for o, n, fp in T.room_openings(P, r, kinds=("window",)):
+            w = int(min(2000, max(400, round(0.75 * o["w"] / 100.0) * 100)))
+            key = (w, 500)
+            if key not in types:
+                types[key] = "Р-%d" % (len(types) + 1)
+            wall = P.wall_by_id[o["wall"]]
+            if wall["dir"] == "H":
+                x0, x1 = o["c"] - w / 2.0, o["c"] + w / 2.0
+                yf = fp[1] + n[1] * 50
+                rect = [x0, min(yf, yf + n[1] * 100), x1, max(yf, yf + n[1] * 100)]
+            else:
+                y0, y1 = o["c"] - w / 2.0, o["c"] + w / 2.0
+                xf = fp[0] + n[0] * 50
+                rect = [min(xf, xf + n[0] * 100), y0, max(xf, xf + n[0] * 100), y1]
+            rads.append(dict(id="Р.%d" % (len(rads) + 1), mark=types[key], rect=[_r(v) for v in rect], w=w, h=500,
+                             bottom=120, room=r["name"], n=list(n), proposed=True))
+    for r in P.rooms:
+        if r.get("cls") != "wet":
+            continue
+        g = r["shp"].buffer(-100, join_style=2)
+        for f, fg in T.furniture_shapes(P, ("wc", "bath", "shower", "washer", "cabinet", "wardrobe")):
+            if r["shp"].contains(fg.centroid):
+                g = g.difference(fg.buffer(50, join_style=2))
+        if g.is_empty or g.area < 0.5e6:
+            continue
+        g = max(getattr(g, "geoms", [g]), key=lambda q: q.area)
+        floors_.append(dict(room=r["name"], poly=[[_r(x), _r(y)] for x, y in list(g.exterior.coords)[:-1]],
+                            area=round(g.area / 1e6, 2), power=int(round(g.area / 1e6 * 150 / 10.0) * 10), proposed=True))
+        ent = T.room_entrances(P, r)
+        door = next((e for e in ent if e.get("opening") is not None), None)
+        if door is None:
+            continue
+        o = door["opening"]
+        nx, ny = door["n"]
+        a, b = door["ends"]
+        t = P.wall_by_id[o["wall"]].get("t", 100)
+        ux, uy = (b[0] - a[0]), (b[1] - a[1])
+        ln = math.hypot(ux, uy) or 1.0
+        ux, uy = ux / ln, uy / ln
+        out_room = door.get("other")
+        p = None
+        for end, sg in ((b, 1), (a, -1)):          # beside the door, on the side where the wall goes on in the room
+            q = (end[0] + sg * ux * 250 - nx * (t + 10), end[1] + sg * uy * 250 - ny * (t + 10))
+            probe = Point(q[0] - nx * 80, q[1] - ny * 80)
+            if out_room is not None and out_room["shp"].contains(probe):
+                p = q
+                break
+        if p is None:
+            continue
+        stats.append(dict(id="ТР.%d" % (len(stats) + 1), x=_r(p[0]), y=_r(p[1]), h=900, room=r["name"],
+                          where=(out_room or {}).get("name", ""), n=[-nx, -ny], proposed=True))
+    if not rads and not floors_:
+        return
+    d["heating"] = dict(radiators=rads, floors=floors_, thermostats=stats,
+                        types=[dict(id=m, desc="Радиатор стальной панельный тип 22, %d×%d мм, нижнее подключение, "
+                                                "термоголовка" % (w, h), w=w, h=h) for (w, h), m in types.items()])
+    _note(d, "heating", "Отопление - проектное предложение: мощность радиаторов и тип подключения - по теплотехническому "
+                        "расчёту и проекту ОВ; тёплый пол - электрический кабельный мат 150 Вт/м².")
+    L(log, "отопление", "радиаторы под окнами: %d шт.; тёплый пол в мокрых зонах: %d" % (len(rads), len(floors_)),
+      len(rads) + len(floors_))

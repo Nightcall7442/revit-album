@@ -57,5 +57,5 @@ def test_revit_album_sheets_in_mock(tmp_path):
     sheets = [e for e in doc.elements if type(e).__name__ == "ViewSheet" and getattr(e, "imports", None)]
     assert len(sheets) == 4
     assert all(len(s.imports) == 1 for s in sheets)
-    assert sum(len(s.images) for s in sheets) >= 4        # logos in stamps + cover logo + axonometry
+    assert sum(len(s.images) for s in sheets) >= 2        # cover axonometry + views (stamps of the reference: no logo)
     assert "Альбом ДП: листов 4 из 4" in g["OUT"]

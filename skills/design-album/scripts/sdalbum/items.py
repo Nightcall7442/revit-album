@@ -22,7 +22,7 @@ import numpy as np
 
 from . import items3d
 
-KIND_ORDER = ["table", "coffee_table", "console", "chair", "armchair", "sofa", "bench", "podium", "shelving", "bookshelf", "records",
+KIND_ORDER = ["dining_set", "table", "coffee_table", "console", "chair", "armchair", "sofa", "bench", "podium", "shelving", "bookshelf", "records",
               "wall_shelf", "chandelier", "sconce", "decor", "sign", "item"]
 LIGHT_KINDS = ("chandelier", "sconce")
 RX = [
@@ -32,18 +32,20 @@ RX = [
     ("shelving", r"(?i)shelf|shelves|полк"),
     ("sofa", r"(?i)sofa|диван|couch|settee"),
     ("bench", r"(?i)bench|скамь|banquet"),
-    ("armchair", r"(?i)armchair|кресл|swivel|lounge"),
+    ("dining_set", r"(?i)(chairs?\W.{0,30}table|table\W.{0,30}chairs?)\W.{0,30}\d+\s*seater|\b\d+\s*seater\b.*(table|chair)|"
+                   r"(table|chair).*\b\d+\s*seater\b|обеденн\w* групп"),
+    ("armchair", r"(?i)ar[im]+chair|arm.?chair|кресл|swivel|lounge"),
     ("chair", r"(?i)chair|стул|stool|alcor_brown"),
     ("console", r"(?i)console|консол|sideboard"),
     ("coffee_table", r"(?i)cocktail|coffee.?table|журнальн"),
     ("table", r"(?i)table|стол|desk"),
 ]
-NAME = {"table": "Стол", "coffee_table": "Стол журнальный", "chair": "Стул", "armchair": "Кресло", "sofa": "Диван",
+NAME = {"dining_set": "Обеденная группа (стол + стулья)", "table": "Стол", "coffee_table": "Стол журнальный", "chair": "Стул", "armchair": "Кресло", "sofa": "Диван",
         "bench": "Скамья встроенная с мягкими элементами", "shelving": "Стеллаж", "bookshelf": "Полка книжная настенная",
         "records": "Полка для виниловых пластинок", "decor": "Декоративный элемент", "sign": "Вывеска световая",
         "chandelier": "Люстра подвесная", "sconce": "Бра настенное", "item": "Изделие", "wall_shelf": "Полка настенная",
         "podium": "Подиум", "console": "Консоль"}
-PLAN_KIND = {"table": "table", "coffee_table": "table", "chair": "chair", "armchair": "armchair", "sofa": "sofa",
+PLAN_KIND = {"dining_set": "table", "table": "table", "coffee_table": "table", "chair": "chair", "armchair": "armchair", "sofa": "sofa",
              "bench": "sofa", "shelving": "cabinet", "bookshelf": "cabinet", "records": "cabinet", "decor": "cabinet",
              "item": "cabinet", "wall_shelf": "cabinet", "podium": "cabinet", "console": "cabinet"}
 MAT = {
@@ -88,13 +90,20 @@ def classify(it, m):
                 sq.append(p)
         if len(sq) >= 6 and H >= 900:
             return "records"
-    hits = [kind for kind, rx in RX if re.search(rx, t)]
+    own = " ".join([it.get("src", "")] + list(it.get("parts", [])))
+    hits = [kind for kind, rx in RX if re.search(rx, own)]     # the names of the object first: a texture of another
+    if not hits:                                               # piece («…Table 8 Seater.jpg» on the zal armchairs)
+        hits = [kind for kind, rx in RX if re.search(rx, t) and kind != "dining_set"]   # must not decide
+    if "dining_set" in hits:                    # «BAY Chair and Issho Rectangle Table 8 Seater»: one model, both
+        return "dining_set"
     if "table" in hits and "chair" in hits and m is not None:     # «Table_Chairs_010»: the geometry decides
         top = sum(a for z, a in m._faces_dir(2, 1) if z > 0.9 * H)
         hits = ["table"] if top > 0.35 * W * D else ["chair"]
     for kind in hits:
         if kind == "table" and H < 560:
             return "coffee_table"
+        if kind == "armchair" and W >= 1500:       # a seat for two and more: a sofa (zal: «ARIMCHAIR» 1970 wide)
+            return "sofa"
         return kind
     # by geometry only: furniture to sit at / on stands on the floor (L-107: a 31 mm plank at +1013 is a wall shelf,
     # a 101 mm box on the floor is a podium - neither is a coffee table)
@@ -182,6 +191,10 @@ def elements(kind, m):
             out.append(("Опора (подстолье)", rest[0][1].fam, rest[0][0]))
         else:
             out.append(("Столешница и опора", top[1].fam, top[0]))
+    elif kind == "dining_set":                 # a table and its chairs in one model of the catalogue
+        out.append(("Стол: столешница и опора", None, body[0][0]))
+        soft = [ip for ip in body if ip[1].fam in ("fabric", "leather")]
+        out.append(("Стулья: обивка, каркас", soft[0][1].fam if soft else "fabric", (soft or body)[0][0]))
     elif kind in ("chair", "armchair", "sofa"):
         fams = {}
         for i, p in body:
@@ -231,6 +244,9 @@ def notes_for(kind, it, extra=()):
     if kind in ("chair", "armchair", "sofa", "bench"):
         n.append("Мебель для сидения — по ГОСТ 19917-2014; ткань для общественного интерьера: износостойкость не менее "
                  "40 000 циклов по Мартиндейлу, пропитка от пятен, чехлы / матрасы — съёмные.")
+    if kind == "dining_set":
+        n.append("Обеденная группа — изделие каталога (стол и стулья одной серии): модель, количество мест и отделку "
+                 "сверить с паспортом производителя; позиции стульев на плане — условно.")
     if kind in ("table", "coffee_table"):
         n.append("Столешница — с защитной пропиткой от пятен (кофе, масло), кромка скруглена r = 2–3 мм; опора — с "
                  "регулируемыми подпятниками, устойчивость проверить при нагрузке на край.")
@@ -638,6 +654,8 @@ def _to_plan(d, P):
                 if re.match(r"^(Стол|Стул|Кресло|Диван|Стеллаж|Тумба|Полка)\b(?!.*груп)", hit.get("name", "")) \
                         or hit.get("source") == "items":
                     hit["name"] = it["name"]          # the sketch names it better than the plan import
+                    if PLAN_KIND.get(it.get("kind")):     # and its kind (zal: the «chairs» were a sofa and armchairs)
+                        hit["kind"] = PLAN_KIND[it["kind"]]
                 continue
             r = P.room_of_point((place[0], place[1]), 300)
             if r is None:

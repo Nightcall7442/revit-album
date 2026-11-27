@@ -201,6 +201,13 @@ def test_shop_front_closes_the_room(tmp_path):
     assert len(model.Project(d2, str(tmp_path)).rooms) == 1
 
 
+def test_shop_front_far_from_the_building_is_not_a_wall(tmp_path):
+    # «zal proj»: a spare glazing copy 5 m beside the model split the outline into two parts (sheet 04 crashed)
+    stray = _obj("Box001", (3765, 15345, 7505, 15545), 0, 3000, parent=None, nverts=5000)
+    d = _box_room(tmp_path, [stray])
+    assert not any(w.get("note") == "витраж" for w in d["walls"])
+
+
 def test_rooms_named_by_what_stands_in_them(tmp_path):
     from sdalbum import autofix
     objs = [_obj("Plane1", (-200, -200, 9200, 0)), _obj("Plane2", (-200, 0, 0, 4000)), _obj("Plane3", (9000, 0, 9200, 4000)),

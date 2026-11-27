@@ -54,7 +54,7 @@ def test_lighting_binds_track_not_spots(tmp_path):
 def test_socket_labels_stay_in_rooms(tmp_path):
     A, no, blk = _sheet(URGENCH, "sockets", tmp_path)
     rooms = unary_union([r["shp"] for r in A.P.rooms]).buffer(60)
-    labels = [(e.dxf.text, p) for e, p in _texts(blk) if e.dxf.text.startswith("h") and "гр." in e.dxf.text]
+    labels = [(e.dxf.text, p) for e, p in _texts(blk) if e.dxf.text.startswith("Н=") and "гр." in e.dxf.text]
     assert labels
     for s, p in labels:
         assert rooms.contains(Point(p[0], p[1])), "label %r outside the rooms at %s" % (s, p)
@@ -86,7 +86,7 @@ def test_node_callout_points_to_nodes_sheet(tmp_path):
     A, no, blk = _sheet(URGENCH, "ceilings", tmp_path)
     target = SP.node_sheet(A)
     assert target is not None
-    assert [t for _, _, t, *_ in A.sheets][target - 1] == "Узлы"
+    assert dict((n, t) for n, _, t, *_ in A.sheets)[target] == "Узлы"
     refs = [e.dxf.text for e, _ in _texts(blk) if e.rgb == (90, 90, 90)]
     assert refs and all(r == str(target) for r in refs)
 
@@ -116,13 +116,20 @@ def test_cover_logo_visible(tmp_path):
     from PIL import Image
     from sdalbum import album, model
     from sdalbum.placer import flush_all
-    A = album.Album(model.load(URGENCH), str(tmp_path), ["cover"])
-    A.build()
-    A.render_pdf(str(tmp_path / "c.pdf"), str(tmp_path / "png"), dpi=60)
-    im = np.array(Image.open(tmp_path / "png" / "s01.png").convert("L")).astype(float)
     k = 60 / 25.4
-    crop = im[int((297 - 262) * k):int((297 - 234) * k), int(30 * k):int(146 * k)]
-    assert (crop < 90).mean() > 0.08, "logo not visible on the cover"
+    # studio cover: the big logo top left; reference cover: the logo in the top left corner of the frame
+    # reference cover: no logo (as on the reference album) - the axonometry of the flat fills the left part
+    for style, (y0, y1, x0, x1), dark, share in (("studio", (234, 262, 30, 146), 90, 0.08),
+                                                ("reference", (60, 250, 40, 280), 235, 0.15)):
+        P = model.load(URGENCH)
+        P.meta["cover_style"] = style
+        out = tmp_path / style
+        A = album.Album(P, str(out), ["cover"])
+        A.build()
+        A.render_pdf(str(out / "c.pdf"), str(out / "png"), dpi=60)
+        im = np.array(Image.open(out / "png" / "s01.png").convert("L")).astype(float)
+        crop = im[int((297 - y1) * k):int((297 - y0) * k), int(x0 * k):int(x1 * k)]
+        assert (crop < dark).mean() > share, "logo / axonometry not visible on the %s cover" % style
 
 
 def test_measured_binds_passage_and_interior_doors(tmp_path):
@@ -147,8 +154,8 @@ def test_no_binding_text_on_door_leaves(tmp_path):
 def test_socket_label_pairs_heights_with_groups():
     from sdalbum.sheets_plans import socket_label
     c = [dict(h=300, group="6"), dict(h=2150, group="5")]
-    assert socket_label(c) == "h300 гр.6; h2150 гр.5"
-    assert socket_label([dict(h=300, group="5"), dict(h=1100, group="5")]) == "h300/1100 · гр.5"
+    assert socket_label(c) == "Н= 300 мм гр.6; Н= 2150 мм гр.5"
+    assert socket_label([dict(h=300, group="5"), dict(h=1100, group="5")]) == "Н= 300/1100 мм · гр.5"
 
 
 def test_socket_bindings_are_real_positions(tmp_path):

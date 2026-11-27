@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-"""Graphic system of the Space Design Studio album (ezdxf, model mm, A3 sheets in mm)."""
+"""Graphic system of the album (ezdxf, model mm, A3 sheets in mm).
+
+One lettering for every text: upright narrow technical font of GOST 2.304 (as GOSTCommon of the reference album) -
+assets/fonts/osifont-gost.ttf. «bold» keeps the same face (drawings have no bold lettering)."""
 import math
 import os
 import shutil
@@ -8,8 +11,8 @@ from ezdxf import const, colors
 from ezdxf.enums import TextEntityAlignment, MTextEntityAlignment
 from shapely.geometry import Polygon
 
-FONT = "Inter-Regular.otf"
-FONT_B = "Inter-SemiBold.otf"
+FONT = "osifont-gost.ttf"
+FONT_B = "osifont-gost.ttf"
 ST, STB = "SD", "SD_B"
 A3 = (420.0, 297.0)
 ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "assets")
@@ -17,19 +20,17 @@ _FONT_CACHE = {}
 
 
 def ensure_fonts():
-    """Install bundled Inter fonts for ezdxf (once per machine)."""
+    """Install the bundled album font for ezdxf (once per machine)."""
     from ezdxf.fonts import fonts
-    try:
-        f = fonts.make_font(FONT, cap_height=1.0)
-        if "inter" in str(getattr(f, "name", "")).lower() or fonts.find_font_face(FONT) is not None:
-            ok = fonts.font_manager.has_font(FONT) if hasattr(fonts.font_manager, "has_font") else True
-            if ok:
-                return
-    except Exception:
-        pass
     dst = os.path.expanduser("~/.local/share/fonts")
+    if all(os.path.exists(os.path.join(dst, fn)) for fn in {FONT, FONT_B}):
+        try:
+            if fonts.find_font_face(FONT) is not None and "osifont" in str(fonts.find_font_face(FONT).family).lower():
+                return
+        except Exception:
+            pass
     os.makedirs(dst, exist_ok=True)
-    for fn in (FONT, FONT_B):
+    for fn in {FONT, FONT_B}:
         src = os.path.join(ASSETS, "fonts", fn)
         if os.path.exists(src) and not os.path.exists(os.path.join(dst, fn)):
             shutil.copy(src, os.path.join(dst, fn))
@@ -92,9 +93,9 @@ def new_doc():
         ds.dxf.dimtoh = 0
         ds.dxf.dimdec = 0
         ds.dxf.dimzin = 8
-        ds.dxf.dimclrd = 8
-        ds.dxf.dimclre = 8
-        ds.dxf.dimclrt = 250
+        ds.dxf.dimclrd = 7                    # geometry and overall sizes - black (meaning colours: dims.color)
+        ds.dxf.dimclre = 7
+        ds.dxf.dimclrt = 7
         ds.dxf.dimlwd = 13
         ds.dxf.dimlwe = 13
         ds.dxf.dimtmove = 2
@@ -189,6 +190,7 @@ def arc(sp, c, r, a0, a1, layer="SD_Тонкие", rgb=None, lw=None, lt=None):
 
 def _paths(h, shp):
     polys = list(shp.geoms) if hasattr(shp, "geoms") else [shp]
+    h.dxf.hatch_style = 0                        # normal (odd parity): islands stay empty in every renderer
     n = 0
     for p in polys:
         if p.is_empty or p.area < 1e-6:
@@ -300,55 +302,137 @@ def chain(sp, values, line_pos, ext_from, style="SD50", vertical=False, small=No
 
 
 # ---------------------------------------------------------------- sheet furniture
-def frame(psp):
+STAMP_A_W = 90.0          # stamp A: the right column of the sheet (tables, legend, notes, title block)
+STAMP_A_H = 60.0          # reference album: empty cell 15, designer / client 15, project 15, sheet title 15
+STAMP_B_H = 15.0          # stamp B: a strip along the whole bottom (reference album)
+C_LABEL = (110, 110, 110)
+
+
+def scale_label(scale_txt):
+    """«1:25» -> «1 : 25» (several scales «1:25, 1:10» keep their order)."""
+    import re
+    return re.sub(r"1\s*:\s*(\d+)", lambda m: "1 : " + m.group(1), scale_txt or "")
+
+
+def frame(psp, info=None):
+    """A3 landscape: 20 mm binding margin, 5 mm elsewhere; under the frame the print time (left) and the format."""
     W, H = A3
     rect(psp, 0, 0, W, H, "SD_Тонкие", rgb=(180, 180, 180))
     rect(psp, 20, 5, W - 5, H - 5, "SD_Рамка")
+    info = info or {}
+    if info.get("printed"):
+        text(psp, info["printed"], (20.0, 2.5), 1.8, "MIDDLE_LEFT", "SD_Штамп", rgb=C_LABEL)
+    text(psp, "Формат: А3А", (W - 5.0, 2.5), 1.8, "MIDDLE_RIGHT", "SD_Штамп", rgb=C_LABEL)
+
+
+def _fit_text(s, h, width, hmin=1.8):
+    while tw(s, h) > width and h > hmin:
+        h -= 0.1
+    if tw(s, h) > width:
+        while s and tw(s + "…", h) > width:
+            s = s[:-1]
+        s = s.rstrip() + "…"
+    return s, h
+
+
+def _label_value(psp, x, y_top, y_bot, label, value, w, hv=2.5, align="L"):
+    xs = x + 1.5 if align == "L" else x + w / 2.0
+    al = "MIDDLE_LEFT" if align == "L" else "MIDDLE_CENTER"
+    text(psp, label, (xs, y_top - 2.2), 1.6, al, "SD_Штамп", rgb=C_LABEL)
+    v, h = _fit_text(str(value or ""), hv, w - 3.0)
+    text(psp, v, (xs, (y_top - 3.6 + y_bot) / 2.0), h, al, "SD_Штамп")
+
+
+def stamp_a(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info):
+    """Title block at the foot of the right column (stamp A), as on the reference album (mm from the bottom):
+    5-20 sheet title | «Лист» | «Листов»; 20-35 the project; 35-50 «Дизайнер» (name, contact) and «Заказчик»;
+    50-65 an empty cell. The column line runs up to the top of the frame."""
+    W, H = A3
+    x1, y0 = W - 4.8, 5.0
+    x0 = x1 - STAMP_A_W
+    y1 = y0 + STAMP_A_H
+    line(psp, (x0, y0), (x0, H - 5), "SD_Рамка")                # the column
+    line(psp, (x0, y1), (x1, y1), "SD_Рамка")
+    for yy in (y0 + 15.0, y0 + 30.0, y0 + 35.0, y0 + 40.0, y0 + 45.0):
+        line(psp, (x0, yy), (x1, yy), "SD_Тонкие")
+    for xx in (x0 + 30.0, x0 + 75.0):                           # designer / client rows: label | value | spare
+        line(psp, (xx, y0 + 30.0), (xx, y0 + 45.0), "SD_Тонкие")
+    xa, xb = x1 - 30.1, x1 - 15.0                                # «Лист», «Листов»
+    line(psp, (xa, y0), (xa, y0 + 15.0), "SD_Тонкие")
+    line(psp, (xb, y0), (xb, y0 + 15.0), "SD_Тонкие")
+    line(psp, (xa, y0 + 10.0), (x1, y0 + 10.0), "SD_Тонкие")
+    text(psp, "Дизайнер", (x0 + 2.1, y0 + 42.5), 2.5, "MIDDLE_LEFT", "SD_Штамп")
+    d_, hd = _fit_text(info.get("designer") or info.get("studio") or "", 2.5, 43.0)
+    text(psp, d_, (x0 + 32.2, y0 + 42.5), hd, "MIDDLE_LEFT", "SD_Штамп")
+    c_, hc = _fit_text(info.get("designer_contact") or "", 2.5, 43.0)
+    text(psp, c_, (x0 + 32.2, y0 + 37.5), hc, "MIDDLE_LEFT", "SD_Штамп")
+    text(psp, "Заказчик", (x0 + 2.1, y0 + 32.5), 2.5, "MIDDLE_LEFT", "SD_Штамп")
+    k_, hk = _fit_text(info.get("client") or "", 2.5, 43.0)
+    text(psp, k_, (x0 + 32.2, y0 + 32.5), hk, "MIDDLE_LEFT", "SD_Штамп")
+    pr, hp = _fit_text(info.get("project") or info.get("object") or "", 3.0, STAMP_A_W - 4.0, 2.0)
+    text(psp, pr, ((x0 + x1) / 2.0, y0 + 22.5), hp, "MIDDLE_CENTER", "SD_Штамп")
+    t, ht = _fit_text(title, 3.0, xa - x0 - 4.0, 1.8)
+    if ht < 2.4 and tw(title, 2.4) > xa - x0 - 4.0:               # a long name: two lines
+        from . import typo
+        words, l1 = typo.fix(title).replace(typo.NBSP, " ").split(" "), ""
+        while words and tw((l1 + " " + words[0]).strip(), 2.4) <= xa - x0 - 4.0:
+            l1 = (l1 + " " + words.pop(0)).strip()
+        l2, h2 = _fit_text(" ".join(words), 2.4, xa - x0 - 4.0, 1.8)
+        text(psp, l1, ((x0 + xa) / 2.0, y0 + 9.6), 2.4, "MIDDLE_CENTER", "SD_Штамп")
+        text(psp, l2, ((x0 + xa) / 2.0, y0 + 5.4), h2, "MIDDLE_CENTER", "SD_Штамп")
+    else:
+        text(psp, t, ((x0 + xa) / 2.0, y0 + 7.5), ht, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Лист", ((xa + xb) / 2.0, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Листов", ((xb + x1) / 2.0, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheet_no), ((xa + xb) / 2.0, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheets_total), ((xb + x1) / 2.0, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
+
+
+def stamp_b(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info):
+    """Title block as a strip along the whole bottom of the frame (stamp B, sheets with full-width drawings), as on the
+    reference album: 20-130 an empty cell | 130-230 the project | 230-315 «Дизайнер» / «Проектировщик» / «Заказчик» |
+    315-385 the sheet title | «Лист» | «Листов»; 15 mm high."""
+    W, H = A3
+    x0, x1, y0 = 20.0, W - 4.8, 5.0
+    y1 = y0 + STAMP_B_H
+    line(psp, (x0, y1), (x1, y1), "SD_Рамка")
+    for xx in (130.0, 230.2, 315.2, 385.1, 400.2):
+        line(psp, (xx, y0), (xx, y1), "SD_Тонкие")
+    for xx in (260.1, 300.1):
+        line(psp, (xx, y0), (xx, y1), "SD_Тонкие")
+    for yy in (y0 + 5.0, y0 + 10.0):
+        line(psp, (230.2, yy), (315.2, yy), "SD_Тонкие")
+    line(psp, (385.1, y0 + 10.0), (x1, y0 + 10.0), "SD_Тонкие")
+    pr, hp = _fit_text(info.get("project") or info.get("object") or "", 3.0, 96.0, 2.0)
+    text(psp, pr, (180.1, y0 + 7.5), hp, "MIDDLE_CENTER", "SD_Штамп")
+    for i, (lab, key) in enumerate((("Дизайнер", "designer"), ("Проектировщик", "designer_contact"), ("Заказчик", "client"))):
+        yy = y0 + 12.5 - 5.0 * i
+        text(psp, lab, (232.3, yy), 2.2, "MIDDLE_LEFT", "SD_Штамп")
+        v, hv = _fit_text(info.get(key) or (info.get("studio") if key == "designer" else "") or "", 2.4, 37.0, 1.6)
+        text(psp, v, (261.9, yy), hv, "MIDDLE_LEFT", "SD_Штамп")
+    t, ht = _fit_text(title, 3.0, 66.0, 1.8)
+    text(psp, t, (350.1, y0 + 7.5), ht, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Лист", (392.6, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, "Листов", (407.7, y0 + 12.5), 2.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheet_no), (392.6, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
+    text(psp, str(sheets_total), (407.7, y0 + 5.0), 3.5, "MIDDLE_CENTER", "SD_Штамп")
 
 
 def stamp(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info):
-    W, H = A3
-    x1, y0 = W - 5, 5
-    x0, y1 = x1 - 230, y0 + 26
-    rect(psp, x0, y0, x1, y1, "SD_Штамп")
-    xa, xb = x0 + 52, x1 - 42
-    line(psp, (xa, y0), (xa, y1), "SD_Штамп")
-    line(psp, (xb, y0), (xb, y1), "SD_Штамп")
-    line(psp, (xa, y0 + 9), (xb, y0 + 9), "SD_Тонкие")
-    line(psp, (xa, y0 + 17.5), (xb, y0 + 17.5), "SD_Тонкие")
-    line(psp, (xb, y0 + 13), (x1, y0 + 13), "SD_Тонкие")
-    line(psp, (xb + 21, y0), (xb + 21, y0 + 13), "SD_Тонкие")
-    if logo_def is not None:
-        iw, ih = logo_def.dxf.image_size.x, logo_def.dxf.image_size.y
-        wl = 44.0
-        hl = wl * ih / iw
-        img = psp.add_image(logo_def, insert=(x0 + 4, y0 + (26 - hl) / 2.0), size_in_units=(wl, hl), dxfattribs={"layer": "SD_Штамп"})
-        img.rgb = (254, 254, 254)
-    text(psp, info["object"], (xa + 2.5, y1 - 4.3), 2.4, "MIDDLE_LEFT", "SD_Штамп")
-    text(psp, info["place"], (xa + 2.5, y0 + 13.2), 2.4, "MIDDLE_LEFT", "SD_Штамп")
-    ht = 3.2
-    while tw(title, ht, True) > xb - xa - 5.0 and ht > 2.0:     # a long sheet title shrinks to its field
-        ht -= 0.1
-    if tw(title, ht, True) > xb - xa - 5.0:
-        while title and tw(title + "…", ht, True) > xb - xa - 5.0:
-            title = title[:-1]
-        title = title.rstrip() + "…"
-    text(psp, title, (xa + 2.5, y0 + 4.5), ht, "MIDDLE_LEFT", "SD_Штамп", bold=True)
-    text(psp, "Стадия", (xb + 2, y1 - 3.0), 1.7, "MIDDLE_LEFT", "SD_Штамп", rgb=(110, 110, 110))
-    text(psp, info.get("stage", "Рабочий проект"), (xb + 2, y1 - 8.5), 2.3, "MIDDLE_LEFT", "SD_Штамп")
-    text(psp, "Масштаб", (xb + 2, y0 + 10.5), 1.7, "MIDDLE_LEFT", "SD_Штамп", rgb=(110, 110, 110))
-    text(psp, scale_txt or "-", (xb + 2, y0 + 4.5), 2.4, "MIDDLE_LEFT", "SD_Штамп")
-    text(psp, "Лист", (xb + 31.5, y0 + 10.5), 1.7, "MIDDLE_CENTER", "SD_Штамп", rgb=(110, 110, 110))
-    text(psp, "%s / %s" % (sheet_no, sheets_total), (xb + 31.5, y0 + 4.5), 2.8, "MIDDLE_CENTER", "SD_Штамп", bold=True)
-    text(psp, info.get("date", ""), (xb + 2, y1 + 2.2), 1.7, "MIDDLE_LEFT", "SD_Тонкие", rgb=(130, 130, 130))
+    stamp_b(psp, logo_def, sheet_no, sheets_total, title, scale_txt, info)
 
 
-def view_title(psp, x, y, title, scale_txt=None, h=4.0):
-    text(psp, title, (x, y), h, "BOTTOM_LEFT", "SD_Текст", bold=True)
-    wlen = len(title) * h * 0.58
+def view_title(psp, x, y, title, scale_txt=None, h=3.5, align="L"):
+    """Caption of a view: the name underlined, the scale «1 : 25» under it. (x, y) - baseline of the name;
+    align «L» - from x, «C» - centred on x. Returns the bottom y of the caption."""
+    w = tw(title, h)
+    xa = x if align == "L" else x - w / 2.0
+    text(psp, title, (xa, y), h, "BOTTOM_LEFT", "SD_Текст")
+    line(psp, (xa, y - 1.0), (xa + w, y - 1.0), "SD_Текст", lw=25)
     if scale_txt:
-        text(psp, scale_txt, (x + wlen + 3, y), h * 0.7, "BOTTOM_LEFT", "SD_Текст", rgb=(110, 110, 110))
-    line(psp, (x, y - 1.5), (x + wlen + (h * 0.7 * len(scale_txt) * 0.6 + 3 if scale_txt else 0), y - 1.5), "SD_Тонкие")
+        text(psp, scale_label(scale_txt), (xa + w / 2.0, y - 2.2), 2.5, "TOP_CENTER", "SD_Текст")
+        return y - 5.2
+    return y - 1.5
 
 
 def viewport(psp, cx_mm, cy_mm, w_mm, h_mm, model_center, scale):
@@ -386,12 +470,55 @@ def fixed_row_height(row_h, h, n):
     return max(row_h, (n - 1) * h * 1.85 + h * 1.35 + 1.2) if n > 1 else row_h
 
 
+TABLE_MIN_H = 2.3          # lettering of tables is never smaller than this (the drawings' 2.5 mm reads at 2.0 in a cell)
+TITLE_ROW_H = 6.0          # the name of a table is its first row, above the header (as on the reference album)
+STAR_NOTE = "* Ведомость для оценки объёма работ; количество уточняется по месту."
+STAR_H = 4.5               # a table named «* ...» has the footnote above under it
+HEAD_H = 3.5               # «Условные обозначения:», «Примечание:» - 3.5 mm, underlined
+
+
+def heading(psp, x, y, s, h=HEAD_H):
+    """A block heading under the top y (5 mm in from the column line): the text and a line under it."""
+    x += 5.0
+    y -= 2.0
+    text(psp, s, (x, y), h, "TOP_LEFT", "SD_Текст")
+    line(psp, (x, y - h - 1.0), (x + tw(s, h), y - h - 1.0), "SD_Текст", lw=18)
+    return y - h - 3.0
+
+
+def _cell_text(c):
+    return "" if c is None or callable(c) else str(c)
+
+
+def uo_line(rgb, lw=50):
+    """«УО» of a linear item (plinth, cornice, wall finish): a coloured stroke across the cell."""
+    def fn(psp, cx, cy, w, h):
+        line(psp, (cx - w * 0.38, cy), (cx + w * 0.38, cy), "SD_Таблицы", rgb, lw)
+    return fn
+
+
+def uo_fill(rgb, hatch_=None, hatch_rgb=None, outline=(60, 60, 60)):
+    """«УО» of an area item (floor, ceiling): a rectangle with the fill / hatch of the plan."""
+    def fn(psp, cx, cy, w, h):
+        ww, hh = w * 0.38, min(h * 0.32, 2.4)
+        pts = [(cx - ww, cy - hh), (cx + ww, cy - hh), (cx + ww, cy + hh), (cx - ww, cy + hh)]
+        fill(psp, pts, rgb, "SD_Таблицы")
+        if hatch_:
+            hatch(psp, pts, hatch_rgb or outline, hatch_, scale=0.3, layer="SD_Таблицы")
+        poly(psp, pts, "SD_Таблицы", True, outline, 13)
+    return fn
+
+
 def table_height(widths, header, rows, h=2.0, head_h=7.0, title=None, pad=1.2, total=None, row_h=None):
-    tot = head_h + (5.0 if title else 0.0)
-    for ri, r in enumerate(list(rows) + ([total] if total else [])):
+    h = max(h, TABLE_MIN_H)
+    head_h = max(head_h, h * 2.6)
+    tot = head_h + (TITLE_ROW_H if title else 0.0) + (STAR_H if title and title.startswith("*") else 0.0)
+    all_rows = list(rows) + ([total] if total else [])
+    for ri, r in enumerate(all_rows):
         cells = r["cells"] if isinstance(r, dict) else r
-        n = max([wrap_count("" if c is None else str(c), widths[i] - 2 * pad, h) for i, c in enumerate(cells)] + [1])
-        tot += fixed_row_height(row_h, h, n) if row_h else row_height(h, n)
+        n = max([wrap_count(_cell_text(c), widths[i] - 2 * pad, h) for i, c in enumerate(cells)] + [1])
+        is_total = total is not None and ri == len(all_rows) - 1
+        tot += fixed_row_height(row_h, h, n) if (row_h and not is_total) else row_height(h, n)
     return tot
 
 
@@ -399,12 +526,18 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
           total=None, zebra=False, out_rows=None):
     """Top-left at (x, y). rows: list of lists (strings) or dict(cells=..., bold=..., fill=rgb). Auto row height.
     out_rows: list to receive (top y, height) of every row (to centre legend symbols)."""
+    h = max(h, TABLE_MIN_H)
+    head_h = max(head_h, h * 2.6)
     tw = sum(widths)
     xs = [x]
     for w in widths:
         xs.append(xs[-1] + w)
-    if title:
-        text(psp, title, (x, y + 2.5), 3.0, "BOTTOM_LEFT", "SD_Таблицы", bold=True)
+    y_top = y
+    if title:                                   # the name of the table: its first row
+        t, ht = _fit_text(title, 2.5, tw - 2 * pad, 1.8)
+        text(psp, t, (x + tw / 2.0, y - TITLE_ROW_H / 2.0), ht, "MIDDLE_CENTER", "SD_Таблицы")
+        line(psp, (x, y - TITLE_ROW_H), (x + tw, y - TITLE_ROW_H), "SD_Таблицы")
+        y -= TITLE_ROW_H
     fill(psp, [(x, y), (x + tw, y), (x + tw, y - head_h), (x, y - head_h)], (236, 236, 238), "SD_Таблицы")
     for i, hd in enumerate(header):
         mtext(psp, hd, ((xs[i] + xs[i + 1]) / 2.0, y - head_h / 2.0), h * 0.9, widths[i] - 2 * pad, "SD_Таблицы",
@@ -417,16 +550,20 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
         bold = (isinstance(r, dict) and r.get("bold")) or (total is not None and ri == len(all_rows) - 1)
         lines_needed = 1
         for i, c in enumerate(cells):
-            c = "" if c is None else str(c)
-            lines_needed = max(lines_needed, wrap_count(c, widths[i] - 2 * pad, h, bold))
-        rh = fixed_row_height(row_h, h, lines_needed) if row_h else row_height(h, lines_needed)
+            lines_needed = max(lines_needed, wrap_count(_cell_text(c), widths[i] - 2 * pad, h, bold))
+        is_total = total is not None and ri == len(all_rows) - 1       # the total: a plain row under picture rows
+        rh = fixed_row_height(row_h, h, lines_needed) if (row_h and not is_total) else row_height(h, lines_needed)
         if out_rows is not None:
             out_rows.append((cy, rh))
         if isinstance(r, dict) and r.get("fill"):
             fill(psp, [(x, cy), (x + tw, cy), (x + tw, cy - rh), (x, cy - rh)], r["fill"], "SD_Таблицы")
+            line(psp, (x, cy), (x + tw, cy), "SD_Таблицы", rgb=(170, 170, 170))     # (the fill hid the line above)
         elif zebra and ri % 2 == 1:
             fill(psp, [(x, cy), (x + tw, cy), (x + tw, cy - rh), (x, cy - rh)], (247, 247, 248), "SD_Таблицы")
         for i, c in enumerate(cells):
+            if callable(c):                     # a symbol in the cell («УО», sketch)
+                c(psp, (xs[i] + xs[i + 1]) / 2.0, cy - rh / 2.0, widths[i], rh)
+                continue
             c = "" if c is None else str(c)
             if not c:
                 continue
@@ -440,32 +577,58 @@ def table(psp, x, y, widths, header, rows, h=2.0, row_h=None, head_h=7.0, aligns
                 mtext(psp, c, (xs[i] + pad, cy - rh / 2.0), h, widths[i] - 2 * pad, "SD_Таблицы", "MIDDLE_LEFT", 1.1, bold=bold)
         line(psp, (x, cy - rh), (x + tw, cy - rh), "SD_Таблицы", rgb=(170, 170, 170))
         cy -= rh
-    rect(psp, x, y, x + tw, cy, "SD_Таблицы")
+    rect(psp, x, y_top, x + tw, cy, "SD_Таблицы")
     for xx in xs[1:-1]:
         line(psp, (xx, y), (xx, cy), "SD_Таблицы", rgb=(170, 170, 170))
     line(psp, (x, y - head_h), (x + tw, y - head_h), "SD_Таблицы")
+    if title and title.startswith("*"):         # a schedule to estimate the works: the footnote under it
+        n, hn = _fit_text(STAR_NOTE, 1.8, tw, 1.5)
+        text(psp, n, (x, cy - 1.2), hn, "TOP_LEFT", "SD_Таблицы")
+        cy -= STAR_H
     return cy
 
 
-def legend(psp, x, y, items, title="Условные обозначения", w1=20.0, w2=72.0, rh=6.5):
-    """items: list of (draw_fn(psp, cx, cy) | None, label). Returns bottom y."""
-    rows = []
-    cy = table(psp, x, y, [w1, w2], ["Эскиз", "Наименование"], [["", lab] for _, lab in items], h=1.9,
-               row_h=rh, head_h=6.0, title=title, out_rows=rows)
-    for (fn, lab), (top, hh) in zip(items, rows):
+def legend(psp, x, y, items, title="Условные обозначения:", w1=20.0, w2=72.0, rh=6.5):
+    """items: list of (draw_fn(psp, cx, cy) | None, label). The heading «Условные обозначения:» and a list «symbol -
+    meaning» without a grid, as on the reference album. Returns bottom y."""
+    if title:
+        y = heading(psp, x, y, title if title.endswith(":") else title + ":")
+    h = 2.3
+    y -= 1.0
+    for fn, lab in items:
+        n = wrap_count(lab, w2 - 2.0, h)
+        hh = max(rh, n * h * 1.6 + 1.6)
+        cy = y - hh / 2.0
         if fn is not None:
-            fn(psp, x + w1 / 2.0, top - hh / 2.0)
-    return cy
+            fn(psp, x + 5.0 + w1 / 2.0, cy)
+        mtext(psp, lab, (x + 5.0 + w1 + 2.0, cy), h, w2 - 6.0, "SD_Таблицы", "MIDDLE_LEFT", 1.1)
+        y -= hh
+    return y
 
 
-def notes(psp, x, y, lines_, width=110.0, title="Примечания:"):
-    """Numbered notes, one MTEXT per item (a paragraph break that falls on the wrap edge was lost by the renderer:
-    «...разводки.5. Выводы» ran into one line)."""
-    text(psp, title, (x, y), 2.5, "BOTTOM_LEFT", "SD_Текст", bold=True)
-    yy = y - 2.0
+def legend_height(items, title="Условные обозначения:", w2=72.0, rh=6.5):
+    """The height legend() takes (same wrapping)."""
+    hh = (HEAD_H + 5.0 if title else 0.0) + 1.0
+    return hh + sum(max(rh, wrap_count(lab, w2 - 2.0, 2.3) * 2.3 * 1.6 + 1.6) for _, lab in items)
+
+
+NOTE_H = 2.2
+
+
+def notes_height(lines_, width, h=None):
+    h = h or NOTE_H
+    return HEAD_H + 5.0 + sum(wrap_count("%d. %s" % (i + 1, l), width - 8.0, h) for i, l in enumerate(lines_)) * h * 1.667 * 1.3
+
+
+def notes(psp, x, y, lines_, width=110.0, title="Примечание:", h=None):
+    """Heading «Примечание:» and numbered notes under the top y, one MTEXT per item (a paragraph break that falls
+    on the wrap edge was lost by the renderer: «...разводки.5. Выводы» ran into one line)."""
+    yy = heading(psp, x, y, title)
     m = None
+    x, width = x + 5.0, width - 8.0                 # notes 5 mm in from the column line (reference album)
+    h = h or NOTE_H
     for i, l in enumerate(lines_):
         s = "%d. %s" % (i + 1, l)
-        m = mtext(psp, s, (x, yy), 2.1, width, "SD_Текст", "TOP_LEFT", 1.3)
-        yy -= wrap_count(s, width, 2.1) * 2.1 * 1.667 * 1.3
+        m = mtext(psp, s, (x, yy), h, width, "SD_Текст", "TOP_LEFT", 1.3)
+        yy -= wrap_count(s, width, h) * h * 1.667 * 1.3
     return m

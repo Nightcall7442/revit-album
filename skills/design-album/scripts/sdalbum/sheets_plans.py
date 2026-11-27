@@ -6,6 +6,7 @@ from shapely.geometry import Polygon, box, LineString, Point, MultiPoint
 from shapely.ops import unary_union
 
 from . import gfx as S
+from . import marks as MK
 from . import symbols as Y
 from . import dims as DM
 from .album import Column, BRONZE
@@ -31,10 +32,14 @@ def has_data(A, key):
         "floors": bool(P.floors),
         "ceilings": bool(P.rooms),
         "lighting": bool(P.lighting),
+        "lighting_marks": bool(P.lighting),
+        "lighting_schedule": bool(P.lighting),
+        "switches": bool(P.switches),
         "sockets": bool(P.sockets),
         "plumbing": bool(P.plumbing),
         "finishes": bool(P.rooms),
         "windows": any(t.get("division") for t in P.opening_types.values()),
+        "elev_key": len(P.elevations) >= 2 and len({e.get("label") for e in P.elevations}) == len(P.elevations),
     }.get(key, True)
 
 
@@ -633,18 +638,60 @@ def box_sheathing(P, b):
     return a / 1e6
 
 
-def _mark_box(A, sp, occ, s, p, rgb):
+def _mark_box(A, sp, occ, s, p, rgb, anchor=None, rounded=True, inside=None):
+    """A finish mark in a rounded frame at p (or the nearest free place, within `inside` when given); moved off its
+    place it gets a leader with a dot to the anchor (what it marks)."""
     k = A.plan_k
     h = 2.0 * k
     w = S.tw(s, h, True) + 1.6 * k
     hh = h + 1.4 * k
-    cands = [p] + ring_candidates(p, [d * k for d in (4, 6, 9, 13)], 16)
-    for c in cands:
-        g = box(c[0] - w / 2, c[1] - hh / 2, c[0] + w / 2, c[1] + hh / 2)
-        if occ.free(g, ignore=("wall",)) and occ.overlap(g) < 0.35 * g.area:
+    cands = [p] + ring_candidates(p, [d * k for d in (2, 3, 4, 6, 9, 13)], 16)
+    best = None
+    for c_ in cands:
+        g_ = box(c_[0] - w / 2, c_[1] - hh / 2, c_[0] + w / 2, c_[1] + hh / 2)
+        sc_ = occ.overlap(g_) + Point(c_).distance(Point(p)) * 1e-3
+        if inside is not None and not inside.contains(g_):
+            sc_ += 1e6
+        elif inside is None and not occ.free(g_, ignore=("wall",)):
+            sc_ += 1e5
+        if best is None or sc_ < best[0]:
+            best = (sc_, c_, g_)
+        if sc_ < 1.0:
             break
-    occ.defer(lambda: Y.tag_box(sp, s, c, k, h=2.0, txt_rgb=rgb, border=rgb, bold=True))
+    _, c, g = best
+    anchor = anchor or p
+    moved = Point(c).distance(Point(anchor)) > 0.5 * max(w, hh)
+    if moved:
+        edge = g.exterior.interpolate(g.exterior.project(Point(anchor)))
+        occ.add(LineString([(edge.x, edge.y), anchor]).buffer(0.3 * k), "leader")
+    occ.defer(lambda: (Y.leader(sp, (edge.x, edge.y), anchor, k) if moved else None,
+                       Y.tag_box(sp, s, c, k, h=2.0, txt_rgb=(20, 20, 20), border=(40, 40, 40), rounded=rounded)))
     occ.add(g.buffer(0.3 * k), "tag")
+
+
+def _room_wall_marks(A, sp, occ, rm, typ, mask, segs=(), min_len=1200.0):
+    """Marks of the room's wall finish on its walls: one per wall run at least min_len long, inside the room at the
+    middle of the run, a leader to the wall."""
+    k = A.plan_k
+    inner = rm["shp"].buffer(-sc(A, 70), join_style=2)
+    if inner.is_empty or inner.geom_type != "Polygon":
+        return
+    rest = inner.exterior.difference(mask)
+    for g in (rest.geoms if hasattr(rest, "geoms") else [rest]):
+        cs = list(g.coords)
+        for a, b in zip(cs[:-1], cs[1:]):
+            ln = LineString([a, b])
+            if ln.length < min_len:
+                continue
+            m = ln.interpolate(0.5, normalized=True)
+            if any(LineString([sg["a"], sg["b"]]).distance(m) < sc(A, 250) for sg in segs):
+                continue                         # the wall has its own finish: its segment carries the mark
+            dx, dy = (b[0] - a[0]) / ln.length, (b[1] - a[1]) / ln.length
+            nx, ny = -dy, dx
+            if not rm["shp"].contains(Point(m.x + nx * 50, m.y + ny * 50)):
+                nx, ny = -nx, -ny
+            _mark_box(A, sp, occ, typ, (m.x + nx * 4.0 * k, m.y + ny * 4.0 * k), None, anchor=(m.x, m.y),
+                      inside=rm["shp"].buffer(-sc(A, 120)))
 
 
 # ------------------------------------------------------------------ 06 furniture
@@ -672,15 +719,26 @@ FLOOR_TINTS = [(234, 232, 226), (222, 233, 243), (241, 232, 214), (226, 238, 226
 FLOOR_ZONE_TINT = (243, 214, 206)              # a zone of other tiles over the base (a strip, a bar zone)
 
 
+FLOOR_TINTS_BY = {"НП": [(241, 232, 214), (236, 222, 200), (245, 238, 224)],   # wood: warm
+                  "ПЛ": [(226, 232, 238), (222, 233, 243), (234, 232, 226)],   # tile / stone: cool grey
+                  "КВ": [(233, 228, 241)], "НС": [(226, 238, 226)]}
+
+
 def floor_tints(P):
-    """Floor type id -> fill colour on the floor plan (a zone with its own outline gets the accent)."""
-    out, i = {}, 0
+    """Floor type id -> fill colour on the floor plan, by the material (wood warm, tile cool); the same colour goes to
+    «УО» of the schedule. A zone laid over a base covering gets the accent."""
+    from . import marks as MK
+    has_base = any(not f.get("polys") for f in P.floors)
+    out, used = {}, {}
     for f in P.floors:
-        if f.get("polys"):
+        if f.get("polys") and has_base:
             out[f["id"]] = FLOOR_ZONE_TINT
-        else:
-            out[f["id"]] = FLOOR_TINTS[i % len(FLOOR_TINTS)]
-            i += 1
+            continue
+        pre = MK.floor_prefix(f.get("material", ""), f.get("pattern"))
+        pal = FLOOR_TINTS_BY.get(pre, FLOOR_TINTS)
+        i = used.get(pre, 0)
+        used[pre] = i + 1
+        out[f["id"]] = pal[i % len(pal)]
     return out
 
 
@@ -880,7 +938,7 @@ def floors(A, no, title, scale):
              for f in P.floors]
     items += [(_lg_line(BRONZE, 70), "Стык покрытий: профиль-порог в створе двери / разделительный профиль зоны")]
     if any(f.get("pattern") == "tile" for f in P.floors):
-        items.append((_lg_sym(lambda p, cx, cy: Y.start_mark(p, (cx, cy), 1.0)), "Начало раскладки плитки"))
+        items.append((_lg_sym(lambda p, cx, cy: Y.start_mark(p, (cx - 2.2, cy - 1.8), 0.85)), "Начало раскладки плитки"))
     if any(f.get("pattern") not in ("tile", "model") for f in P.floors):
         items.append((_lg_sym(lambda p, cx, cy: Y.arrow(p, (cx - 6, cy), (cx + 6, cy), 1.0)), "Направление укладки доски"))
     if P.wet_rooms():
@@ -912,12 +970,13 @@ def floors(A, no, title, scale):
         txt = f.get("material", "")
         if f.get("layers"):
             txt += ". " + f["layers"]
-        rows.append([f["id"], txt, fmt, where, fmt_area(a), fmt_area(ar), cnt])
+        rows.append([f["id"], S.uo_fill(tints.get(f["id"], Y.TILE if f.get("pattern") == "tile" else Y.PARQUET)),
+                     txt, fmt, where, fmt_area(a), fmt_area(ar), cnt])
     tot = round(tot, 2)
-    col.table([8, 40, 12, 19, 10, 11, 9], ["Тип", "Покрытие и состав пола", "Формат, мм", "Помещения / зона", "Площадь, м²",
-                                          "С запасом, м²", "Плиток, шт."], rows,
-              title="Экспликация полов", h=1.45, aligns=["C", "L", "C", "L", "C", "C", "C"], head_h=6.5,
-              total=["", "Итого", "", "", fmt_area(tot), fmt_area(tot_r), "%d" % n_tot if n_tot else ""])
+    col.table([9, 8, 33, 11, 15, 9, 9, 7], ["Марка", "УО", "Покрытие и состав пола", "Формат", "Помещения",
+                                           "S, м²", "С зап., м²", "Шт."], rows,
+              title="* Ведомость полов", h=1.45, aligns=["C", "C", "L", "C", "L", "C", "C", "C"], head_h=6.5,
+              total=["", "", "Общий итог", "", "", fmt_area(tot), fmt_area(tot_r), "%d" % n_tot if n_tot else ""])
     extra = []
     rooms_tot = P.total_area()
     on_floor = sum(b["shape"].intersection(unary_union([r["shp"] for r in P.rooms])).area for b in P.boxes
@@ -957,7 +1016,7 @@ def ceilings(A, no, title, scale):
     k = A.plan_k
     psp, sp, occ = A.plan_sheet(no, title, scale, "Подвесные потолки, короба, ниши. Отметки - от чистого пола до низа потолка")
     C = P.ceilings
-    types = C.get("types", [{"id": "Т1", "desc": "Потолок ГКЛ, окраска", "level": P.ceiling}])
+    types = C.get("types", [{"id": "ПО-1", "desc": "Потолок ГКЛ, окраска", "level": P.ceiling}])
     tcol = {t["id"]: C_T[i % len(C_T)] for i, t in enumerate(types)}
     zones = C.get("zones", [])
     OVER = ("cove", "beam", "rail")            # drawn over the ceiling, not a ceiling surface of their own
@@ -1095,9 +1154,11 @@ def ceilings(A, no, title, scale):
         a = round(a, 2)
         tot += a
         lv = t.get("level_text") or ("%+.3f" % (t.get("level", P.ceiling) / 1000.0)).replace(".", ",")
-        rows.append([t["id"], t.get("desc", ""), lv, fmt_area(a) if a > 0 else t.get("qty", "-")])
-    col.table([9, 60, 20, 20], ["Тип", "Конструкция и отделка", "Отметка", "Площадь, м²"], rows, title="Ведомость потолков",
-              h=1.55, aligns=["C", "L", "C", "C"], total=["", "Итого", "", fmt_area(tot)])
+        rows.append([t["id"], S.uo_fill(tcol[t["id"]], "ANSI31" if t.get("kind") == "bulkhead" else None, (120, 140, 170)),
+                     t.get("desc", ""), lv, fmt_area(a) if a > 0 else t.get("qty", "-")])
+    col.table([9, 10, 51, 19, 20], ["Марка", "УО", "Конструкция и отделка", "Отметка", "Площадь, м²"], rows,
+              title="* Ведомость потолков", h=1.55, aligns=["C", "C", "L", "C", "C"],
+              total=["", "", "Общий итог", "", fmt_area(tot)])
     open_ceiling = any("открыт" in t.get("short", "") for t in types)
     col.notes(A.note_lines("ceilings", [
         "Высота от чистого пола до плиты - %d мм." % P.slab,
@@ -1307,9 +1368,21 @@ def _pairs(P, rm):
     return xs, ys
 
 
-def lighting(A, no, title, scale):
+def lighting_bind(A, no, title, scale):
+    """«План освещения. Привязки»: every fixture bound to the walls in red, no switches (reference album)."""
+    return lighting(A, no, title, scale, mode="bind")
+
+
+def lighting_switch(A, no, title, scale):
+    """«План выключателей и групп»: switches, control lines, keys; no bindings."""
+    return lighting(A, no, title, scale, mode="switch")
+
+
+def lighting(A, no, title, scale, mode="all"):
     P = A.P
     k = A.plan_k
+    sw_on = mode != "bind"
+    bind_on = mode != "switch"
     psp, sp, occ = A.plan_sheet(no, title, scale, "Светильники, выключатели, группы управления. Привязки - по центрам светильников")
     Y.furniture_ghost(sp, P, k)
     Y.draw_walls(sp, P, k)
@@ -1319,7 +1392,7 @@ def lighting(A, no, title, scale):
     for z in P.ceilings.get("zones", []):
         if z.get("kind") in ("bulkhead",):
             Y.dashed_poly(sp, z["poly"], 1.0 * k, 0.6 * k, (120, 120, 120), 13)
-    for r_ in wiring_runs(P):
+    for r_ in (wiring_runs(P) if sw_on else []):
         for a, b in r_["segs"]:
             Y.dashed(sp, a, b, 1.0 * k, 0.5 * k, (214, 90, 90), 13, "SD_Проводка")
             occ.add(LineString([a, b]).buffer(0.6 * k), "wire")      # binding texts keep off the control lines
@@ -1327,12 +1400,12 @@ def lighting(A, no, title, scale):
     for f in sorted(P.lighting, key=lambda f: order.get(f["kind"], 5)):
         occ.add(Y.light_icon(sp, f, k), "sym")
     sw_c = {}
-    for s in P.switches:
+    for s in (P.switches if sw_on else []):
         c, g = Y.switch_icon(sp, s, k)
         sw_c[s["id"]] = c
         occ.add(g, "sym")
     # key letters near the first segment of each run
-    for r_ in wiring_runs(P):
+    for r_ in (wiring_runs(P) if sw_on else []):
         if not r_["key"] or len(r_["pts"]) < 2:
             continue
         a, b = r_["pts"][0], r_["pts"][1]
@@ -1343,7 +1416,7 @@ def lighting(A, no, title, scale):
             nx, ny = -(b[1] - a[1]) / L, (b[0] - a[0]) / L
             cands += [(m[0] + nx * 1.4 * k, m[1] + ny * 1.4 * k), (m[0] - nx * 1.4 * k, m[1] - ny * 1.4 * k)]
         place_text(sp, occ, r_["key"], cands, 1.8 * k, bold=True, rgb=(190, 40, 40), mask=True)
-    for s in P.switches:
+    for s in (P.switches if sw_on else []):
         label_near(A, sp, occ, s["id"], sw_c[s["id"]], h=1.9, bold=True, dists=(3.2, 4.5, 6.0, 8.0))
     # LED lengths
     for f in P.lighting:
@@ -1363,9 +1436,10 @@ def lighting(A, no, title, scale):
         place_text(sp, occ, t, cands, 1.6 * k, rgb=(185, 110, 0), mask=True)
     # binding chains per room: fixed fixtures only. Track spots / linear modules ride on the track and are
     # movable -> bound through the track itself; LED strips carry their own length label.
-    for rm in P.rooms:
+    for rm in (P.rooms if bind_on else []):
         for vals, pos, vert in light_bindings(P, rm):
-            DM.chain(sp, vals, pos, pos, k, occ, vertical=vert, merge=20.0)
+            with DM.color(DM.RED):               # electrics: bindings in red (reference album)
+                DM.chain(sp, vals, pos, pos, k, occ, vertical=vert, merge=20.0)
     outer(A, sp, occ, sides=("B", "L"), openings=False)
     col = Column(A, psp)
     kinds = []
@@ -1374,6 +1448,8 @@ def lighting(A, no, title, scale):
             kinds.append(f["kind"])
     spec = P.d.get("lighting_spec", {})
     items = []
+    if mode == "switch" and A.sheet_no("lighting_marks") is not None:
+        kinds = []                           # the fixtures are on the marking sheet: here the switches and the lines
     for kd in kinds:
         fx = [f for f in P.lighting if f["kind"] == kd]
         if kd == "led":
@@ -1382,9 +1458,13 @@ def lighting(A, no, title, scale):
             qty = str(len(fx))
         groups = sorted(set(f.get("group", "") for f in fx))
         items.append((_lg_light(kd), [spec.get(kd, LIGHT_SPEC.get(kd, kd)), qty, ", ".join(groups)]))
-    items.append((_lg_sym(lambda p, cx, cy: Y.switch_icon(p, dict(id="", x=cx - 1.0, y=cy - 1.3, wall="Y+", keys=2), 1.0)),
-                  ["Выключатель (штрихи = клавиши)", str(len(P.switches)), "см. таблицу"]))
-    items.append((_lg_wire, ["Линия управления; а, б, в - клавиши", "-", ""]))
+    if sw_on:
+        items.append((_lg_sym(lambda p, cx, cy: Y.switch_icon(p, dict(id="", x=cx - 1.0, y=cy - 1.3, wall="Y+", keys=2), 1.0)),
+                      ["Выключатель (штрихи = клавиши)", str(len(P.switches)), "см. таблицу"]))
+        items.append((_lg_wire, ["Линия управления; а, б, в - клавиши", "-", ""]))
+    else:
+        items.append((_lg_sym(lambda p, cx, cy: S.line(p, (cx - 6, cy), (cx + 6, cy), "SD_Таблицы", S.C_RED, 25)),
+                      ["Привязки светильников к стенам, мм", "-", ""]))
     col.legend_table(items, ["Эскиз", "Наименование", "Кол.", "Группа"], [15, 54, 10, 30], aligns=["C", "L", "C", "L"])
     sw_rows = []
     MODE = {"pass": " (проходной)", "cross": " (перекрёстный)"}
@@ -1394,8 +1474,9 @@ def lighting(A, no, title, scale):
         if s.get("pass_through") and not any(c.get("mode") for c in s.get("controls", [])):
             ctrl = (ctrl + " (проходной)") if ctrl else s.get("note", "проходной")
         sw_rows.append([s["id"], str(s.get("keys", 1)), str(s.get("h", 900)), ctrl])
-    col.table([10, 10, 10, 79], ["Марка", "Клав.", "h, мм", "Управление"], sw_rows, title="Выключатели", h=1.5,
-              aligns=["C", "C", "C", "L"], head_h=5.0)
+    if sw_on and sw_rows:
+        col.table([10, 10, 10, 79], ["Марка", "Клав.", "h, мм", "Управление"], sw_rows, title="Выключатели", h=1.5,
+                  aligns=["C", "C", "C", "L"], head_h=5.0)
     col.notes(A.note_lines("lighting", [
         "Высота выключателей - 900 мм, у кровати - 700 мм от чистого пола (если не указано иное).",
         "Блоки питания LED / треков - в доступных местах с ревизией.",
@@ -1449,13 +1530,27 @@ def socket_label(c):
 
     def gname(g):
         return "" if not g else ("сл." if g.startswith("сл") else "гр.%s" % g)
-    if len(by) == 1:
+    if len(by) == 1:                     # «Н= 1100 мм» of the reference album
         g, hs = next(iter(by.items()))
-        return "h%s" % "/".join(str(h) for h in hs) + (" · %s" % gname(g) if g else "")
-    return "; ".join(("h%s %s" % ("/".join(str(h) for h in hs), gname(g))).strip() for g, hs in by.items())
+        return "Н= %s мм" % "/".join(str(h) for h in hs) + (" · %s" % gname(g) if g else "")
+    return "; ".join(("Н= %s мм %s" % ("/".join(str(h) for h in hs), gname(g))).strip() for g, hs in by.items())
 
 
 def sockets(A, no, title, scale):
+    """Sockets; with a plan of electrical outputs in the album the outputs (ВЫВ, КОНД, Р32, БРА) go there."""
+    from .sheets_more import OUTPUT_KINDS
+    P = A.P
+    if A.sheet_no("el_outputs") is not None:
+        keep = P.sockets
+        P.sockets = [s_ for s_ in keep if s_["kind"] not in OUTPUT_KINDS]
+        try:
+            return _sockets(A, no, title, scale)
+        finally:
+            P.sockets = keep
+    return _sockets(A, no, title, scale)
+
+
+def _sockets(A, no, title, scale):
     P = A.P
     k = A.plan_k
     psp, sp, occ = A.plan_sheet(no, title, scale, "Розетки, силовые выводы, слаботочные точки. Высоты - от чистого пола до центра")
@@ -1487,7 +1582,8 @@ def sockets(A, no, title, scale):
         label_near(A, sp, occ, ("%s, низ %+.3f" % (p.get("name", "ЩК"), p.get("bottom", 1500) / 1000.0)).replace(".", ","), (x, y), h=1.8,
                    bold=True, dists=(4, 6, 8, 11))
     # bindings first (they must sit at their wall), then labels, which have room to move and take leaders
-    DM.edge_chains(sp, P, bind, k, occ, offsets=(sc(A, 320), sc(A, 650), sc(A, 950)), exo=3.0)
+    with DM.color(DM.RED):
+        DM.edge_chains(sp, P, bind, k, occ, offsets=(sc(A, 320), sc(A, 650), sc(A, 950)), exo=3.0)
     for c, cen in zip(clusters, centers):
         lab = socket_label(c)
         n = Y.NORMALS[c[0]["wall"]]
@@ -1508,8 +1604,10 @@ def sockets(A, no, title, scale):
                 far.append((cen[0] + t[0] * sh * L + n[0] * off * k, cen[1] + t[1] * sh * L + n[1] * off * k, 0 if rot else 90))
         rm = P.room_of_point(cen, 200)
         within = rm["shp"].buffer(-0.3 * k) if rm else None
-        res = place_text(sp, occ, lab, [(c_[0], c_[1], rot) for c_ in cands] + far, 1.5 * k, rgb=(40, 40, 40), mask=True,
+        res = place_text(sp, occ, lab, [(c_[0], c_[1], rot) for c_ in cands] + far, 1.5 * k, rgb=(20, 20, 20), mask=True,
                          within=within)
+        if res:                              # the height in a frame, black (reference album: red are the bindings)
+            Y.outline(sp, res[1], (30, 30, 30), 13, "SD_Электрика")
         if res and math.hypot(res[0][0] - cen[0], res[0][1] - cen[1]) > 6.0 * k:
             q = res[1].exterior.interpolate(res[1].exterior.project(Point(cen)))
             S.line(sp, (q.x, q.y), (cen[0] + n[0] * 0.8 * k, cen[1] + n[1] * 0.8 * k), "SD_Тонкие", (90, 90, 90), 9)
@@ -1529,14 +1627,16 @@ def sockets(A, no, title, scale):
                       {"ЩК": "Щит квартирный", "ЩР": "Щит распределительный", "ЩО": "Щит освещения"}.get(
                           P.panel.get("name", "ЩК"), "Щит %s" % P.panel.get("name", ""))))
     col.legend(items, rh=5.2)
-    if P.circuits:
-        pn = (P.panel or {}).get("name", "ЩК")
-        col.table([9, 27, 27, 46], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits,
-                  title="Групповые линии (рекомендуемая схема %s)" % pn, h=1.5, aligns=["C", "L", "L", "L"], head_h=5.0)
-    col.notes(A.note_lines("sockets", [
+    notes = A.note_lines("sockets", [
         "Схема %s - рекомендуемая; окончательно - по электропроекту с учётом выделенной мощности." % (P.panel or {}).get("name", "ЩК"),
         "Прокладка - в гофре, по стенам строго вертикально / горизонтально; в санузлах - вне зон 0-1.",
-    ]))
+    ])
+    if P.circuits and A.sheet_no("el_fittings") is None:      # else on the schedule of the electrical fittings
+        pn = (P.panel or {}).get("name", "ЩК")
+        col.table([9, 27, 27, 46], ["Гр.", "Аппарат", "Кабель", "Потребители"], P.circuits,
+                  title="Групповые линии (рекомендуемая схема %s)" % pn, h=1.5, aligns=["C", "L", "L", "L"], head_h=5.0,
+                  reserve=S.notes_height(notes, col.w - 1, 1.8) + 2.0)
+    col.notes(notes)
 
 
 def _lg_socket(kind):
@@ -1643,7 +1743,7 @@ def finishes(A, no, title, scale):
     reg_walls(A, occ)
     reg_swings(A, occ)
     F = P.finishes
-    types = F.get("types", [{"id": "О1", "desc": "Окраска"}])
+    types = F.get("types", [{"id": "КР-1", "desc": "Окраска"}])
     frgb = {t["id"]: tuple(t.get("rgb", FIN_RGB_DEFAULT[i % len(FIN_RGB_DEFAULT)])) for i, t in enumerate(types)}
     mask = unary_union([LineString(sl).buffer(sc(A, 160), cap_style=2) for sl in P.separations]
                        + [g.buffer(sc(A, 110), join_style=2) for g in getattr(P, "passages", [])]
@@ -1659,6 +1759,9 @@ def finishes(A, no, title, scale):
             for a, b in zip(cs[:-1], cs[1:]):
                 S.line(sp, a, b, "SD_Акцент", frgb.get(typ, (150, 150, 150)), 70)
         occ.add(inner.exterior.buffer(0.9 * k), "strip")
+    for rm in P.rooms:
+        _room_wall_marks(A, sp, occ, rm, rm.get("wall_finish") or F.get("by_class", {}).get(rm.get("cls"), types[0]["id"]), mask,
+                         F.get("segments", []))
     for seg in F.get("segments", []):
         S.line(sp, seg["a"], seg["b"], "SD_Акцент", frgb.get(seg["type"], (150, 150, 150)), 100)
         occ.add(LineString([seg["a"], seg["b"]]).buffer(1.0 * k), "strip")
@@ -1700,13 +1803,19 @@ def finishes(A, no, title, scale):
         for t, v in split.items():
             tot_w[t] = tot_w.get(t, 0.0) + round(v, 2)
         fl = P.floor_of_room(rm["name"])
-        rows.append([rm["num"], rm["name"], "%s %s" % (rm.get("ceiling_type", "Т1"), fmt_area(rm["area"])), ws,
+        rows.append([rm["num"], rm["name"], "%s %s" % (rm.get("ceiling_type", "ПО-1"), fmt_area(rm["area"])), ws,
                      "%s %s" % ((fl or {}).get("id", "-"), fmt_area(rm["area"]))])
         tot_c += rm["area"]
         tot_f += rm["area"]
+    trows = [[t["id"], S.uo_line(frgb[t["id"]], 70), t.get("desc", ""), fmt_area(tot_w.get(t["id"], 0.0))]
+             for t in types if tot_w.get(t["id"], 0.0) > 0]
+    if trows:
+        col.table([10, 10, 69, 20], ["Марка", "УО", "Наименование", "Площадь, м²"], trows, title="* Ведомость отделки стен",
+                  h=1.55, aligns=["C", "C", "L", "C"],
+                  total=["", "", "Общий итог", fmt_area(sum(tot_w.get(t["id"], 0.0) for t in types))])
     col.table([7, 26, 20, 32, 24], ["№", "Помещение", "Потолок, м²", "Стены, м²", "Пол, м²"], rows,
               title="Ведомость отделки помещений", h=1.55, aligns=["C", "L", "L", "L", "L"],
-              total=["", "Итого", fmt_area(tot_c), " / ".join("%s %s" % (t, fmt_area(v)) for t, v in tot_w.items()), fmt_area(tot_f)])
+              total=["", "Общий итог", fmt_area(tot_c), " / ".join("%s %s" % (t, fmt_area(v)) for t, v in tot_w.items()), fmt_area(tot_f)])
     col.notes(A.note_lines("finishes", [
         "Площади стен - за вычетом проёмов, высота отделки - до потолка; откосы - дополнительно.",
         "Подготовка под окраску: штукатурка, шпаклёвка Q3-Q4, грунт; цвет - по палитре дизайнера.",
@@ -1719,7 +1828,7 @@ def room_wall_finishes(P):
     the kitchen elevation zones (default 650) and are subtracted from the base finish."""
     from .sheets_details import elev_material_areas, groups
     F = P.finishes
-    types = F.get("types", [{"id": "О1", "desc": "Окраска"}])
+    types = F.get("types", [{"id": "КР-1", "desc": "Окраска"}])
     paint_t = types[0]["id"]
     by_room = {}
     for g in groups(P):
@@ -1737,7 +1846,8 @@ def room_wall_finishes(P):
             if wall_len >= 0.9 * per:
                 split = {}
                 if mats["tile"] > 0:
-                    split[typ if typ != paint_t else "О2"] = mats["tile"]
+                    tile_t = next((t["id"] for t in F.get("types", []) if MK.is_tile(t)), "ПЛ-1")
+                    split[typ if typ != paint_t else tile_t] = mats["tile"]
                 if mats["paint"] > 0:
                     split[paint_t] = split.get(paint_t, 0.0) + mats["paint"]
         if split is None:
@@ -1769,3 +1879,34 @@ def wall_areas(P):
                 a -= o["w"] / 1000.0 * min(o["h"], P.ceiling) / 1000.0
         out.append((rm, a))
     return out
+
+
+# ------------------------------------------------------------------ plan of the elevations (key)
+def elev_key(A, no, title, scale):
+    """Plan of the elevations: every view of the album with its number at its wall; the list «view - room - sheet»."""
+    from .sheets_details import view_marker
+    P = A.P
+    k = A.plan_k
+    psp, sp, occ = A.plan_sheet(no, title, scale, None)
+    S.fill(sp, unary_union([r["shp"] for r in P.rooms]), (252, 252, 252), "SD_Штриховка")
+    Y.draw_walls(sp, P, k)
+    Y.draw_openings(sp, P, k, door_rgb=(150, 150, 150))
+    reg_walls(A, occ)
+    for e in P.elevations:
+        occ.add(view_marker(sp, P, e, k, r_mm=2.4), "sym")
+    room_tags(A, sp, occ)
+    outer(A, sp, occ, sides=("B", "L"), openings=False)
+    sheet_of = {}
+    for n_, key, t_, sc_, fn_, arg in A.sheets:
+        if key == "elevations" and isinstance(arg, dict):
+            for e in arg.get("elevs", []):
+                sheet_of.setdefault(e.get("label"), n_)
+    rows = [[e.get("label", ""), e.get("room", "") or e.get("group", ""), str(sheet_of.get(e.get("label"), "—"))]
+            for e in P.elevations]
+    col = Column(A, psp)
+    col.table([14, 70, 16], ["Вид", "Помещение", "Лист"], rows, title="Ведомость развёрток", h=1.8, aligns=["C", "L", "C"])
+    col.legend([(lambda p_, cx, cy: (S.fill(p_, Polygon([(cx - 4.6, cy), (cx - 2.2, cy + 1.6), (cx - 2.2, cy - 1.6)]), (30, 30, 30), "SD_Таблицы"),
+                                      S.circle(p_, (cx, cy), 2.4, "SD_Таблицы", (30, 30, 30), 25),
+                                      S.text(p_, "1", (cx, cy), 2.2, "MIDDLE_CENTER", "SD_Таблицы")),
+                 "Номер вида (развёртки); стрелка — направление взгляда на стену")])
+    col.notes(A.note_lines("elev_key", ["Развёртки стен — вид из помещения; номера видов сквозные по альбому."]))

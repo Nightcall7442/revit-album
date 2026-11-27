@@ -11,6 +11,24 @@ TXT = 1.9    # paper mm, matches dimstyle dimtxt
 GAP = 0.6
 
 
+COLOR = None          # ACI colour of the chains being drawn (None - black of the style)
+RED, BLUE = 1, 5      # electrics: bindings; furniture / items: overall sizes, equal parts
+
+
+class color:
+    """with DM.color(DM.RED): chains of the block in the meaning colour of the reference album."""
+    def __init__(self, aci):
+        self.aci = aci
+
+    def __enter__(self):
+        global COLOR
+        self.prev, COLOR = COLOR, self.aci
+
+    def __exit__(self, *a):
+        global COLOR
+        COLOR = self.prev
+
+
 def style_for(k):
     return {50: "SD50", 40: "SD40", 30: "SD30", 25: "SD25", 20: "SD20", 10: "SD10", 5: "SD5", 1: "SD1"}.get(int(round(k)), "SD50")
 
@@ -101,9 +119,11 @@ def chain(sp, values, line_pos, ext_from, k, occ=None, vertical=False, merge=1.0
             p1, p2, base_ = (ext_from, a), (ext_from, b), (line_pos, a)
         else:
             p1, p2, base_ = (a, ext_from), (b, ext_from), (a, line_pos)
+        ov = {"dimexo": exo} if exo is not None else {}
+        if COLOR is not None:                     # meaning colour of the chain (electrics red, furniture blue)
+            ov.update(dimclrd=COLOR, dimclre=COLOR, dimclrt=COLOR)
         d = sp.add_linear_dim(base=base_, p1=p1, p2=p2, angle=90 if vertical else 0, dimstyle=st, location=p,
-                              text="<>", dxfattribs={"layer": "SD_Размеры"},
-                              override={"dimexo": exo} if exo is not None else None)
+                              text="<>", dxfattribs={"layer": "SD_Размеры"}, override=ov or None)
         d.render()
     out = [placed[i] for i in sorted(placed)]
     if occ is not None and register:
@@ -126,6 +146,8 @@ def outline_of(P):
         g = unary_union([Polygon(g.exterior) for g in m.geoms])
     else:
         g = Polygon(m.exterior)
+    if hasattr(g, "geoms"):                      # detached parts: the building is the largest one
+        g = max(g.geoms, key=lambda x: x.area)
     return g.simplify(1.0, preserve_topology=True)
 
 

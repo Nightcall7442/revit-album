@@ -58,6 +58,64 @@ def _logo_on_gradient(src, dst, insert, w_mm):
 
 
 def cover(A, no, title, scale):
+    """The title sheet. By default as on the reference album (an axonometry of the flat, the project fields, the city
+    and the year); meta.cover_style = "studio" - the studio cover with the hexagon band."""
+    if (A.P.meta.get("cover_style") or "reference") != "studio":
+        return cover_reference(A, no, title, scale)
+    return cover_studio(A, no, title, scale)
+
+
+COVER_FIELDS = (("Проект", "object"), ("Адрес", "place"), ("Заказчик", "client"), ("Дизайнер", "designer"),
+                ("Проектировщик", "engineer"))
+
+
+def cover_reference(A, no, title, scale):
+    """Title of the reference album: no frame; the axonometry of the flat on the left; on the right a vertical line and
+    the fields - «Проект» (large) and «Адрес» at the top, «Заказчик» in the middle, «Дизайнер» and «Проектировщик»
+    lower, the city and the year at the foot (empty fields left out)."""
+    from . import iso3d
+    P = A.P
+    m = P.meta
+    psp = A.make_sheet(no, title, scale, header=False, stamp=False)
+    png = os.path.join(A.out_dir, "cover_3d.png")
+    got = None
+    try:
+        got = iso3d.render_models(P, png, elev=38.0, azim=-58.0, width=2400) if (P.d.get("items") or P.furniture) \
+            else iso3d.render(P, png)
+    except Exception:
+        got = None
+    if got and os.path.isfile(png):
+        iw, ih = Image.open(png).size
+        bx0, by0, bx1, by1 = 6.0, 10.0, 300.0, 285.0
+        s_ = min((bx1 - bx0) / iw, (by1 - by0) / ih)
+        ins = (bx0 + ((bx1 - bx0) - iw * s_) / 2.0, by0 + ((by1 - by0) - ih * s_) / 2.0)
+        img = psp.add_image(A.image("cover_3d.png", png), insert=ins, size_in_units=(iw * s_, ih * s_),
+                            dxfattribs={"layer": "SD_Мебель"})
+        img.rgb = (254, 254, 254)
+    xl = 315.0
+    S.line(psp, (xl, 12.0), (xl, 284.0), "SD_Тонкие", (150, 150, 150), 13)
+
+    def field(lab, val, y, hl=3.0, hv=3.0):
+        """Draw a field; return the y just under its (possibly wrapped) value."""
+        if not val:
+            return y
+        S.text(psp, lab, (xl - 4.0, y), hl, "TOP_RIGHT", "SD_Текст", rgb=(60, 60, 60))
+        S.mtext(psp, val, (xl + 4.0, y), hv, 92.0, "SD_Текст", "TOP_LEFT", 1.2)
+        return y - S.wrap_count(val, 92.0, hv) * hv * 1.2 * 1.4
+    y_addr = min(247.0, field("Проект", (m.get("project") or m.get("object") or "").strip(), 258.0, 4.2, 4.2) - 3.0)
+    field("Адрес", (m.get("place") or "").strip(), y_addr)
+    field("Заказчик", (m.get("client") or "").strip(), 105.0)
+    field("Дизайнер", (m.get("designer") or "").strip(), 58.0)
+    field("Проектировщик", (m.get("engineer") or m.get("designer_contact") or "").strip(), 46.0)
+    city = (m.get("city") or "").strip()
+    year = str(m.get("year") or "").strip()
+    if city:
+        S.text(psp, city, (xl + 4.0, 22.0), 3.0, "TOP_LEFT", "SD_Текст")
+    if year:
+        S.text(psp, year, (xl + 4.0, 16.0), 3.0, "TOP_LEFT", "SD_Текст")
+
+
+def cover_studio(A, no, title, scale):
     m = A.P.meta
     psp = A.make_sheet(no, title, scale, header=False, stamp=False)
     lw_mm = 120.0
@@ -163,9 +221,102 @@ def _merged_title(grp, titles):
     return "%s. %s" % (grp, txt[:1].upper() + txt[1:])
 
 
+def explanatory_items(A):
+    """Paragraphs of the explanatory note of the reference album: the existing premises, the project, the content of
+    the album, the style (only what the data says)."""
+    P = A.P
+    m = P.meta
+    out = []
+    n_r = len(P.rooms)
+    out.append(("Существующее помещение", "Помещение общей площадью %s м², %d %s; высота от чистого пола до плиты "
+                "перекрытия — %d мм. Размеры — по %s." % (
+                    fmt_area(P.total_area()), n_r, "помещение" if n_r == 1 else ("помещения" if n_r < 5 else "помещений"),
+                    P.slab, "3D-модели и обмеру заказчика" if m.get("scene_shift") is not None else "исходным данным")))
+    proj = []
+    if P.parts:
+        proj.append("возводятся перегородки (%d шт., см. план монтажа)" % len(P.parts))
+    else:
+        proj.append("перепланировка не предусмотрена")
+    ct = (P.ceilings or {}).get("types") or []
+    if ct:
+        proj.append("потолки: " + "; ".join("%s — %s" % (t["id"], t.get("short") or t.get("desc", "")) for t in ct))
+    fl = P.floors
+    if fl:
+        proj.append("полы: " + "; ".join("%s — %s" % (f["id"], f.get("material", "")) for f in fl))
+    out.append(("Проект", ("; ".join(proj) + ".")[:1].upper() + ("; ".join(proj) + ".")[1:]))
+    secs = sorted({t.split(".")[0] for _, k, t, *_ in A.sheets if k not in ("cover", "contents", "letter", "general")},
+                  key=lambda x: x)
+    out.append(("Состав проекта", "Альбом рабочих чертежей — %d листов (см. «Ведомость рабочих чертежей»): планы, "
+                "развёртки стен, 3D-виды, ведомости и сводные ведомости%s." % (
+                    A.count, ", мебель индивидуального изготовления" if A.sheet_no("items") else "")))
+    if m.get("style"):
+        out.append(("Стиль", m["style"]))
+    return out
+
+
+def explanatory_note(A, psp, x, y, width):
+    """«Пояснительная записка» under the top y; returns the bottom y."""
+    yy = S.heading(psp, x - 5.0, y, "Пояснительная записка")
+    for head, txt in explanatory_items(A):
+        S.text(psp, head + ":", (x, yy), 2.5, "TOP_LEFT", "SD_Текст")
+        yy -= 4.0
+        S.mtext(psp, txt, (x, yy), 2.2, width, "SD_Текст", "TOP_LEFT", 1.3)
+        yy -= S.wrap_count(txt, width, 2.2) * 2.2 * 1.667 * 1.3 + 3.0
+    return yy
+
+
+def explanatory_sheet(A, no, title, scale):
+    """«Пояснительная записка» as on the reference album (stamp B): the text on the left in large lettering, on the
+    right the explication of the rooms by the survey and by the project and a picture (a render of meta.renders or the
+    axonometry); the questions to the client under the text."""
+    P = A.P
+    psp = A.make_sheet(no, title, scale, None, header=False, kind="B")
+    y = 268.0
+    S.text(psp, "Пояснительная записка.", (46.0, y), 3.0, "TOP_LEFT", "SD_Текст")
+    y -= 10.0
+    for head, txt in explanatory_items(A):
+        body = "%s: %s" % (head, txt)
+        S.mtext(psp, body, (46.0, y), 3.0, 190.0, "SD_Текст", "TOP_LEFT", 1.3)
+        y -= S.wrap_count(body, 190.0, 3.0) * 3.0 * 1.667 * 1.3 + 6.0
+    qs = client_questions(A)
+    if qs and y > 60:
+        S.notes(psp, 41.0, y, qs[:8], 196.0, title="Вопросы к заказчику (до начала работ):")
+    tot = P.total_area()
+    parts = sum(g.area for g in P.parts.values()) / 1e6 if P.parts else 0.0
+    yb = S.table(psp, 250.0, 268.0, [12, 50, 16], ["№", "Наименование", "S, м²"], [["0.1", "Помещение", fmt_area(tot + parts)]],
+                 h=2.2, aligns=["C", "L", "R"], title="Экспликация помещений (обмер)", head_h=5.0,
+                 total=["", "Общая площадь", fmt_area(tot + parts)])
+    rr = [[r["num"], r["name"], fmt_area(r["area"])] for r in P.rooms]
+    yb = S.table(psp, 250.0, yb - 10.0, [12, 50, 16], ["№", "Наименование", "S, м²"], rr, h=2.2, aligns=["C", "L", "R"],
+                 title="Экспликация помещений", head_h=5.0, total=["", "Общая площадь", fmt_area(tot)])
+    pic = None
+    rnd = (P.meta.get("renders") or [None])[0]
+    if isinstance(rnd, dict):
+        rnd = rnd.get("file")
+    if rnd:
+        pic = rnd if os.path.isabs(rnd) else os.path.join(P.base_dir, rnd)
+        if not os.path.isfile(pic):
+            pic = None
+    if pic is None:
+        from . import iso3d
+        png = os.path.join(A.out_dir, "iso.png")
+        try:
+            pic = png if (iso3d.render_models(P, png) if P.d.get("items") else iso3d.render(P, png)) else None
+        except Exception:
+            pic = None
+    if pic:
+        iw, ih = Image.open(pic).size
+        bw, bh = 80.0, max(30.0, yb - 10.0 - 26.0)
+        s_ = min(bw / iw, bh / ih)
+        img = psp.add_image(A.image(os.path.basename(pic), pic), insert=(250.0 + (bw - iw * s_) / 2.0, yb - 10.0 - ih * s_),
+                            size_in_units=(iw * s_, ih * s_), dxfattribs={"layer": "SD_Мебель"})
+        img.rgb = (254, 254, 254)
+
+
 def general(A, no, title, scale):
     P = A.P
-    psp = A.make_sheet(no, title, scale, "Состав альбома, общие указания, экспликация помещений")
+    psp = A.make_sheet(no, title, scale, "Пояснительная записка, общие указания, экспликация помещений"
+                       if A.sheet_no("contents") is not None else "Состав альбома, общие указания, экспликация помещений")
     rows = []
     sk = [x for x in A.sheets if x[1] == "items" and x[2].startswith("Мебель. ")]
     for n, k, t, s, fn, arg in A.sheets:
@@ -189,8 +340,11 @@ def general(A, no, title, scale):
             continue
         rows.append(["%02d" % n, t, s or "-", grp, [t]])
     rows = [r[:3] for r in rows]
-    yb = S.table(psp, 24, 256, [14, 118, 40], ["Лист", "Наименование", "Масштаб"], rows, h=1.8, aligns=["C", "L", "C"],
-                 title="Ведомость листов", head_h=6.0, zebra=True)
+    if A.sheet_no("contents") is not None:        # the list of sheets has its own sheet: the explanatory note here
+        yb = explanatory_note(A, psp, 24, 256, 176)
+    else:
+        yb = S.table(psp, 24, 256, [14, 118, 40], ["Лист", "Наименование", "Масштаб"], rows, h=1.8, aligns=["C", "L", "C"],
+                     title="Ведомость листов", head_h=6.0, zebra=True)
     notes = A.note_lines("general", [
         "Дизайн-проект разработан по исходным данным заказчика (3D-модель / чертежи / обмер).",
         "Все размеры - в миллиметрах, отметки - в метрах от уровня чистого пола (±0,000).",
@@ -207,7 +361,7 @@ def general(A, no, title, scale):
     for r in P.rooms:
         fl = P.floor_of_room(r["name"])
         rr.append([r["num"], r["name"], fmt_area(r["area"]), ("%.2f" % r["perimeter"]).replace(".", ","),
-                   (fl or {}).get("id", "-"), r.get("ceiling_type", "Т1")])
+                   (fl or {}).get("id", "-"), r.get("ceiling_type", "ПО-1")])
         tot += r["area"]                     # the column must add up (lesson L-025)
     yb2 = S.table(psp, 214, 256, [10, 70, 26, 26, 30, 36], ["№", "Наименование", "Площадь, м²", "Периметр, м", "Тип пола", "Тип потолка"],
                   rr, h=1.8, aligns=["C", "L", "C", "C", "C", "C"], title="Экспликация помещений", head_h=6.5,

@@ -57,10 +57,15 @@ def mark_circle(sp, s, p, k, r=2.0, h=2.0, fill_rgb=WHITE, rgb=(40, 40, 40), txt
     return Point(p).buffer(r * k + 0.3 * k)
 
 
-def tag_box(sp, s, p, k, h=1.8, rgb=WHITE, txt_rgb=None, border=(80, 80, 80), bold=False, rot=0.0):
+def tag_box(sp, s, p, k, h=1.8, rgb=WHITE, txt_rgb=None, border=(80, 80, 80), bold=False, rot=0.0, rounded=False):
+    """A mark in a frame. rounded - the frame of finish marks (КР, ОБ, ПЛ ...: rounded corners, as on the reference
+    album); square - К, Д, ПО, НП, П."""
     w = S.tw(s, h * k, bold) + 1.6 * k
     hh = h * k + 1.4 * k
     g = box(p[0] - w / 2, p[1] - hh / 2, p[0] + w / 2, p[1] + hh / 2)
+    if rounded:
+        r = 0.45 * hh
+        g = box(p[0] - w / 2 + r, p[1] - hh / 2 + r, p[0] + w / 2 - r, p[1] + hh / 2 - r).buffer(r, 12)
     if rot:
         from shapely import affinity
         g = affinity.rotate(g, rot, origin=p)
@@ -68,6 +73,12 @@ def tag_box(sp, s, p, k, h=1.8, rgb=WHITE, txt_rgb=None, border=(80, 80, 80), bo
     outline(sp, g, border, 13, "SD_Тонкие")
     S.text(sp, s, p, h * k, "MIDDLE_CENTER", rot=rot, bold=bold, rgb=txt_rgb)
     return g
+
+
+def leader(sp, a, b, k, rgb=(60, 60, 60)):
+    """Thin leader from a mark (a) to what it marks (b), a dot at b."""
+    S.line(sp, a, b, "SD_Тонкие", rgb, 13)
+    S.fill(sp, Point(b).buffer(0.45 * k, 12), rgb, "SD_Тонкие")
 
 
 def level_mark(sp, p, s, k, rgb=(40, 40, 40)):
@@ -117,13 +128,21 @@ def arrow(sp, a, b, k, rgb=BRONZE, lw=35, both=True):
     return LineString([a, b]).buffer(1.2 * k)
 
 
-def start_mark(sp, p, k, rgb=BRONZE):
+def start_mark(sp, p, k, rgb=None, dirs=(1, 1)):
+    """«Начало раскладки» of the reference album: a red L-pair of arrows from the point (along the two walls of the
+    corner the layout starts from). dirs - signs of the arrows along x and y."""
+    rgb = rgb or S.C_RED
     x, y = p
-    S.fill(sp, Point(x, y).buffer(1.3 * k, 24), WHITE, "SD_Текст")
-    S.circle(sp, (x, y), 1.3 * k, "SD_Тонкие", rgb, 25)
-    S.fill(sp, [(x, y), (x + 1.3 * k, y), (x + 0.92 * k, y + 0.92 * k), (x, y + 1.3 * k)], rgb, "SD_Текст")
-    S.fill(sp, [(x, y), (x - 1.3 * k, y), (x - 0.92 * k, y - 0.92 * k), (x, y - 1.3 * k)], rgb, "SD_Текст")
-    return Point(x, y).buffer(1.5 * k)
+    L, a = 4.0 * k, 1.1 * k
+    dx, dy = dirs
+    for (ex, ey) in ((x + dx * L, y), (x, y + dy * L)):
+        S.line(sp, (x, y), (ex, ey), "SD_Текст", rgb, 35)
+        ux, uy = (ex - x) / L, (ey - y) / L
+        S.fill(sp, [(ex, ey), (ex - ux * a - uy * a * 0.45, ey - uy * a + ux * a * 0.45),
+                    (ex - ux * a + uy * a * 0.45, ey - uy * a - ux * a * 0.45)], rgb, "SD_Текст")
+    S.fill(sp, Point(x, y).buffer(0.45 * k, 12), rgb, "SD_Текст")
+    return box(min(x, x + dx * L) - 0.6 * k, min(y, y + dy * L) - 0.6 * k, max(x, x + dx * L) + 0.6 * k,
+               max(y, y + dy * L) + 0.6 * k)
 
 
 def callout(sp, p, num, sheet, k, r=2.6):
@@ -340,9 +359,33 @@ def _filled_circle(sp, c, r, rgb, layer="SD_Свет"):
     S.fill(sp, Point(c).buffer(r, 24), rgb, layer)
 
 
+def _multi_head(sp, f, k):
+    """A module of n heads in a row: a capsule along the row, a head symbol per lamp."""
+    n = f["heads"]
+    (x0, y0), (x1, y1) = f.get("ends") or [[f["x"], f["y"]], [f["x"], f["y"]]]
+    horiz = (x1 - x0) >= (y1 - y0)
+    col = S.C_BLUE if f["kind"] == "spot_ip44" else S.C_RED
+    r = 0.95 * k
+    step = 2.2 * r
+    L = step * (n - 1)
+    cx, cy = f["x"], f["y"]
+    ux, uy = (1.0, 0.0) if horiz else (0.0, 1.0)
+    a = (cx - ux * L / 2, cy - uy * L / 2)
+    b = (cx + ux * L / 2, cy + uy * L / 2)
+    cap = LineString([a, b]).buffer(1.35 * r, 24)
+    S.fill(sp, cap, WHITE, "SD_Свет")
+    outline(sp, cap, col, 25, "SD_Свет")
+    for i in range(n):
+        c = (a[0] + ux * step * i, a[1] + uy * step * i)
+        _filled_circle(sp, c, 0.6 * r, col) if f["kind"] == "surface" else S.circle(sp, c, 0.75 * r, "SD_Свет", col, 18)
+    return cap.buffer(0.2 * k)
+
+
 def light_icon(sp, f, k):
     """Draws a fixture; returns its footprint (for collision registry)."""
     kind, x, y = f["kind"], f["x"], f["y"]
+    if f.get("heads", 1) > 1 and kind in ("surface", "spot", "spot_ip44"):
+        return _multi_head(sp, f, k)
     if kind in ("spot", "spot_ip44"):
         col = S.C_RED if kind == "spot" else S.C_BLUE
         S.fill(sp, Point(x, y).buffer(1.25 * k, 24), WHITE, "SD_Свет")
